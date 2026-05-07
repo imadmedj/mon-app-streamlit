@@ -14,7 +14,17 @@ import plotly.express as px
 import plotly.graph_objects as go
 import duckdb
 import os
+import gdown
 
+
+# Télécharge le dossier si pas encore présent
+if not os.path.exists("data/lstm_final_clean"):
+    os.makedirs("data", exist_ok=True)
+    gdown.download_folder(
+        id="1ayqVr46RCJU_vT6BUjMRLi6OKpsluLRJ",
+        output="data/lstm_final_clean",
+        quiet=False
+    )
 st.set_page_config(
     page_title="HSV · Côtes Algériennes",
     page_icon="🌊",
