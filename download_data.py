@@ -89,10 +89,16 @@ def download_all():
             _download_file(DATA_ZIP_ID, DATA_ZIP_PATH, "hsv_dataset.zip")
             st.info("📦 Décompression dataset…")
             _unzip(DATA_ZIP_PATH, "data/")
+        
+            # DEBUG : affiche ce qui a été extrait
+            import glob
+            parquets = glob.glob("data/**/*.parquet", recursive=True)
+            st.info(f"📁 Parquets trouvés ({len(parquets)}) : {parquets[:5]}")
+        
             # Créer le fichier sentinelle pour ne pas retélécharger
             open(DATA_SENTINEL, "w").close()
             st.success("✅ Dataset téléchargé et extrait")
-        except Exception as e:
+            except Exception as e:
             errors.append(f"data: {e}")
 
     if errors:
