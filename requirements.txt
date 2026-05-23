@@ -11,3 +11,4 @@ h5netcdf
 cdsapi
 scipy
 gdown
+zipfile
