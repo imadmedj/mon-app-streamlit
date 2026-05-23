@@ -396,16 +396,26 @@ def _collect_parquets(path):
 
 def _build_view(con, view_name, path):
     files = _collect_parquets(path)
-    if not files: return False
+    if not files:
+        st.sidebar.error(f"❌ _build_view '{view_name}' : aucun parquet dans {path}")
+        return False
+
+    st.sidebar.success(f"✅ {len(files)} parquets trouvés pour {view_name}")
     files_sql = ", ".join(f"'{f}'" for f in files)
-    # APRÈS (corrigé) :
-    probe = con.execute(f"SELECT * FROM read_parquet([{files_sql}]) LIMIT 1").df()
+
+    try:
+        probe = con.execute(f"SELECT * FROM read_parquet([{files_sql}]) LIMIT 1").df()
+    except Exception as e:
+        st.sidebar.error(f"❌ Lecture parquet échouée : {e}")
+        return False
+
     cols = probe.columns.tolist()
+    st.sidebar.caption(f"Colonnes : {cols}")
 
     def _col(c, typ="DOUBLE"):
         return f"CAST({c} AS {typ})" if c in cols else f"NULL::{typ}"
 
-    dist_expr = _col("DISTANCE","INTEGER") if "DISTANCE" in cols else "1::INTEGER"
+    dist_expr = _col("DISTANCE", "INTEGER") if "DISTANCE" in cols else "1::INTEGER"
     ws_expr   = _col("wind_speed")
     u10_expr  = _col("u10"); v10_expr = _col("v10")
     mwp_expr  = _col("mwp"); mwd_expr = _col("mwd")
@@ -414,66 +424,74 @@ def _build_view(con, view_name, path):
     try:
         avg_sst = con.execute(f"SELECT AVG(CAST(sst AS DOUBLE)) FROM read_parquet([{files_sql}]) LIMIT 100000").fetchone()[0]
         sst_conv = "CAST(sst AS DOUBLE) - 273.15" if avg_sst and avg_sst > 100 else "CAST(sst AS DOUBLE)"
-    except: sst_conv = "NULL::DOUBLE"
+    except:
+        sst_conv = "NULL::DOUBLE"
+
     try:
         avg_msl = con.execute(f"SELECT AVG(CAST(msl AS DOUBLE)) FROM read_parquet([{files_sql}]) LIMIT 100000").fetchone()[0]
         msl_conv = "CAST(msl AS DOUBLE)/100.0" if avg_msl and avg_msl > 10000 else "CAST(msl AS DOUBLE)"
-    except: msl_conv = "NULL::DOUBLE"
+    except:
+        msl_conv = "NULL::DOUBLE"
 
-    con.execute(f"""
-        CREATE OR REPLACE VIEW {view_name} AS
-        SELECT
-            CAST(NOM_PLAGE  AS VARCHAR)   AS NOM_PLAGE,
-            CAST(NOM_WILAYA AS VARCHAR)   AS NOM_WILAYA,
-            CAST(DATETIME   AS TIMESTAMP) AS DATETIME,
-            CAST(X AS DOUBLE)             AS X,
-            CAST(Y AS DOUBLE)             AS Y,
-            {dist_expr}                   AS DISTANCE,
-            CAST(MESURE AS DOUBLE)        AS MESURE,
-            {u10_expr} AS u10, {v10_expr} AS v10,
-            {ws_expr}  AS wind_speed,
-            {mwp_expr} AS mwp,
-            {mwd_expr} AS mwd,
-            ({sst_conv}) AS sst,
-            ({msl_conv}) AS msl,
-            {sal_expr} AS salinity,
-            {o2_expr}  AS o2,
-            {spm_expr} AS spm,
-            YEAR(CAST(DATETIME AS TIMESTAMP))      AS YEAR,
-            MONTH(CAST(DATETIME AS TIMESTAMP))     AS MONTH,
-            DAY(CAST(DATETIME AS TIMESTAMP))       AS DAY,
-            HOUR(CAST(DATETIME AS TIMESTAMP))      AS HOUR,
-            DAYOFWEEK(CAST(DATETIME AS TIMESTAMP)) AS WEEKDAY,
-            CASE MONTH(CAST(DATETIME AS TIMESTAMP))
-                WHEN 12 THEN 'Hiver' WHEN 1 THEN 'Hiver' WHEN 2 THEN 'Hiver'
-                WHEN 3 THEN 'Printemps' WHEN 4 THEN 'Printemps' WHEN 5 THEN 'Printemps'
-                WHEN 6 THEN 'Été' WHEN 7 THEN 'Été' WHEN 8 THEN 'Été'
-                WHEN 9 THEN 'Automne' WHEN 10 THEN 'Automne' WHEN 11 THEN 'Automne'
-            END AS SEASON,
-            CASE
-                WHEN CAST(MESURE AS DOUBLE) < 1.0 THEN 'Calme (< 1 m)'
-                WHEN CAST(MESURE AS DOUBLE) < 2.0 THEN 'Vigilance (1–2 m)'
-                ELSE 'Danger (> 2 m)'
-            END AS ALERTE,
-            CASE
-                WHEN CAST(MESURE AS DOUBLE) < 0.5 THEN 'Calme (<0.5m)'
-                WHEN CAST(MESURE AS DOUBLE) < 1.5 THEN 'Faible (0.5–1.5m)'
-                WHEN CAST(MESURE AS DOUBLE) < 2.5 THEN 'Modéré (1.5–2.5m)'
-                WHEN CAST(MESURE AS DOUBLE) < 4.0 THEN 'Agité (2.5–4m)'
-                ELSE 'Très agité (>4m)'
-            END AS NIVEAU,
-            CASE WHEN CAST(MESURE AS DOUBLE)<1.2
-                      AND ({sst_conv}) BETWEEN 16 AND 24
-                      AND {mwp_expr}<8
-                 THEN TRUE ELSE FALSE END AS AQUA_OK,
-            CASE WHEN ({sst_conv}) BETWEEN 16 AND 26
-                      AND CAST(MESURE AS DOUBLE)<=3.0
-                      AND {ws_expr}<=10.0
-                      AND ({msl_conv})>=1005.0
-                 THEN TRUE ELSE FALSE END AS DESSAL_OK
-        FROM read_parquet([{files_sql}])
-    """)
-    return True
+    try:
+        con.execute(f"""
+            CREATE OR REPLACE VIEW {view_name} AS
+            SELECT
+                CAST(NOM_PLAGE  AS VARCHAR)   AS NOM_PLAGE,
+                CAST(NOM_WILAYA AS VARCHAR)   AS NOM_WILAYA,
+                CAST(DATETIME   AS TIMESTAMP) AS DATETIME,
+                CAST(X AS DOUBLE)             AS X,
+                CAST(Y AS DOUBLE)             AS Y,
+                {dist_expr}                   AS DISTANCE,
+                CAST(MESURE AS DOUBLE)        AS MESURE,
+                {u10_expr} AS u10, {v10_expr} AS v10,
+                {ws_expr}  AS wind_speed,
+                {mwp_expr} AS mwp,
+                {mwd_expr} AS mwd,
+                ({sst_conv}) AS sst,
+                ({msl_conv}) AS msl,
+                {sal_expr} AS salinity,
+                {o2_expr}  AS o2,
+                {spm_expr} AS spm,
+                YEAR(CAST(DATETIME AS TIMESTAMP))      AS YEAR,
+                MONTH(CAST(DATETIME AS TIMESTAMP))     AS MONTH,
+                DAY(CAST(DATETIME AS TIMESTAMP))       AS DAY,
+                HOUR(CAST(DATETIME AS TIMESTAMP))      AS HOUR,
+                DAYOFWEEK(CAST(DATETIME AS TIMESTAMP)) AS WEEKDAY,
+                CASE MONTH(CAST(DATETIME AS TIMESTAMP))
+                    WHEN 12 THEN 'Hiver' WHEN 1 THEN 'Hiver' WHEN 2 THEN 'Hiver'
+                    WHEN 3 THEN 'Printemps' WHEN 4 THEN 'Printemps' WHEN 5 THEN 'Printemps'
+                    WHEN 6 THEN 'Été' WHEN 7 THEN 'Été' WHEN 8 THEN 'Été'
+                    WHEN 9 THEN 'Automne' WHEN 10 THEN 'Automne' WHEN 11 THEN 'Automne'
+                END AS SEASON,
+                CASE
+                    WHEN CAST(MESURE AS DOUBLE) < 1.0 THEN 'Calme (< 1 m)'
+                    WHEN CAST(MESURE AS DOUBLE) < 2.0 THEN 'Vigilance (1–2 m)'
+                    ELSE 'Danger (> 2 m)'
+                END AS ALERTE,
+                CASE
+                    WHEN CAST(MESURE AS DOUBLE) < 0.5 THEN 'Calme (<0.5m)'
+                    WHEN CAST(MESURE AS DOUBLE) < 1.5 THEN 'Faible (0.5–1.5m)'
+                    WHEN CAST(MESURE AS DOUBLE) < 2.5 THEN 'Modéré (1.5–2.5m)'
+                    WHEN CAST(MESURE AS DOUBLE) < 4.0 THEN 'Agité (2.5–4m)'
+                    ELSE 'Très agité (>4m)'
+                END AS NIVEAU,
+                CASE WHEN CAST(MESURE AS DOUBLE)<1.2
+                          AND ({sst_conv}) BETWEEN 16 AND 24
+                          AND {mwp_expr}<8
+                     THEN TRUE ELSE FALSE END AS AQUA_OK,
+                CASE WHEN ({sst_conv}) BETWEEN 16 AND 26
+                          AND CAST(MESURE AS DOUBLE)<=3.0
+                          AND {ws_expr}<=10.0
+                          AND ({msl_conv})>=1005.0
+                     THEN TRUE ELSE FALSE END AS DESSAL_OK
+            FROM read_parquet([{files_sql}])
+        """)
+        st.sidebar.success(f"✅ Vue '{view_name}' créée")
+        return True
+    except Exception as e:
+        st.sidebar.error(f"❌ CREATE VIEW '{view_name}' échoué : {e}")
+        return False
 @st.cache_resource
 def get_con():
     con = duckdb.connect(database=":memory:", read_only=False)
