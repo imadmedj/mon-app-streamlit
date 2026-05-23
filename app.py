@@ -51,7 +51,14 @@ import json
 import warnings
 from datetime import datetime, timedelta
 warnings.filterwarnings("ignore")
+import os
+import streamlit as st
 
+st.write("📁 data folder =")
+st.write(os.listdir("data"))
+
+for root, dirs, files in os.walk("data"):
+    st.write("➡️", root)
 # ═══════════════════════════════════════════════════════════════════════════════
 # TRADUCTIONS
 # ═══════════════════════════════════════════════════════════════════════════════
