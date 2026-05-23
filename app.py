@@ -396,12 +396,12 @@ def _collect_parquets(path):
 
 def _build_view(con, view_name, path):
     files = _collect_parquets(path)
-    probe = con.execute(f"SELECT * FROM read_parquet([{files_sql}]) LIMIT 1").df()
-    st.write("📊 Colonnes du dataset :", probe.columns.tolist())
     if not files: return False
     files_sql = ", ".join(f"'{f}'" for f in files)
+    st.write("📂 fichiers parquet :", files)
     probe = con.execute(f"SELECT * FROM read_parquet([{files_sql}]) LIMIT 1").df()
     cols  = probe.columns.tolist()
+    st.write("📊 colonnes dataset :", cols)
 
     def _col(c, typ="DOUBLE"):
         return f"CAST({c} AS {typ})" if c in cols else f"NULL::{typ}"
