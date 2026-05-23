@@ -86,6 +86,10 @@ if not os.path.exists(ZIP_PATH):
 if not os.path.exists(EXTRACT_PATH):
     with zipfile.ZipFile(ZIP_PATH, "r") as zip_ref:
         zip_ref.extractall("data/")
+    # Renommer le sous-dossier extrait vers lstm_final_clean
+    extracted_folder = os.path.join("data", "dataset_model1")
+    if os.path.exists(extracted_folder):
+        os.rename(extracted_folder, EXTRACT_PATH)
 
 # Plots locaux fine-tunés
 BASE_DIR_PLOTS     = "plots"
