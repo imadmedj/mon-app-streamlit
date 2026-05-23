@@ -11,7 +11,7 @@
 """
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# IMPORTS GLOBAUX (tous ici, une seule fois)
+# IMPORTS GLOBAUX
 # ═══════════════════════════════════════════════════════════════════════════════
 import os
 import glob
@@ -23,8 +23,7 @@ import warnings
 import urllib.request
 from datetime import datetime, timedelta
 from collections import defaultdict
-# AVANT (ligne 35)
-import tensorflow as tf
+
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -33,9 +32,16 @@ import duckdb
 import joblib
 import streamlit as st
 import gdown
-import tensorflow as tf
 import xarray as xr
 import cdsapi
+
+# ── TensorFlow optionnel ─────────────────────────────────────────────────────
+try:
+    import tensorflow as tf
+    TF_AVAILABLE = True
+except (ImportError, ModuleNotFoundError):
+    tf = None
+    TF_AVAILABLE = False
 
 warnings.filterwarnings("ignore")
 
@@ -50,18 +56,19 @@ st.set_page_config(
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TÉLÉCHARGEMENT MODÈLES & DATASETS (après set_page_config)
+# TÉLÉCHARGEMENT MODÈLES & DATASETS
 # ═══════════════════════════════════════════════════════════════════════════════
 BASE_DIR_MODELS = "models"
 os.makedirs(BASE_DIR_MODELS, exist_ok=True)
 
-gru_path = os.path.join(BASE_DIR_MODELS, "global_gru.keras")
-if not os.path.exists(gru_path):
-    gdown.download("https://drive.google.com/uc?id=16As511yfxgvRZyr2aIp8WWynlCO3l6u3", gru_path, quiet=False)
+if TF_AVAILABLE:
+    gru_path = os.path.join(BASE_DIR_MODELS, "global_gru.keras")
+    if not os.path.exists(gru_path):
+        gdown.download("https://drive.google.com/uc?id=16As511yfxgvRZyr2aIp8WWynlCO3l6u3", gru_path, quiet=False)
 
-lstm_path = os.path.join(BASE_DIR_MODELS, "global_lstm.keras")
-if not os.path.exists(lstm_path):
-    gdown.download("https://drive.google.com/uc?id=1NzDUOtwSHyduaeKx0ICFFSmttQlMxKh4", lstm_path, quiet=False)
+    lstm_path = os.path.join(BASE_DIR_MODELS, "global_lstm.keras")
+    if not os.path.exists(lstm_path):
+        gdown.download("https://drive.google.com/uc?id=1NzDUOtwSHyduaeKx0ICFFSmttQlMxKh4", lstm_path, quiet=False)
 
 scaler_path = os.path.join(BASE_DIR_MODELS, "scaler.pkl")
 if not os.path.exists(scaler_path):
@@ -81,10 +88,9 @@ if not os.path.exists(EXTRACT_PATH):
         zip_ref.extractall(EXTRACT_PATH)
 
 # Plots locaux fine-tunés
-BASE_DIR_PLOTS = "plots"
+BASE_DIR_PLOTS     = "plots"
 os.makedirs(BASE_DIR_PLOTS, exist_ok=True)
-
-zip_plots_path    = os.path.join(BASE_DIR_PLOTS, "plots_local_models.zip")
+zip_plots_path     = os.path.join(BASE_DIR_PLOTS, "plots_local_models.zip")
 extract_plots_path = os.path.join(BASE_DIR_PLOTS, "plots_local_models")
 
 if not os.path.exists(zip_plots_path):
@@ -241,7 +247,6 @@ LSTM_PATH   = "models/global_lstm.keras"
 GRU_PATH    = "models/global_gru.keras"
 SCALER_PATH = "models/scaler.pkl"
 
-# Pipeline prédiction
 WINDOW   = 72
 HORIZONS = [1, 6, 12, 24]
 FEATURES = [
@@ -251,10 +256,10 @@ FEATURES = [
     "x_norm", "y_norm",
 ]
 DANGER_THRESHOLDS = {
-    "vert":   (0.0, 0.5, "Mer calme",    "🟢"),
-    "jaune":  (0.5, 1.0, "Mer agitée",   "🟡"),
-    "orange": (1.0, 1.5, "Risque modéré","🟠"),
-    "rouge":  (1.5, 9.0, "DANGER",       "🔴"),
+    "vert":   (0.0, 0.5, "Mer calme",     "🟢"),
+    "jaune":  (0.5, 1.0, "Mer agitée",    "🟡"),
+    "orange": (1.0, 1.5, "Risque modéré", "🟠"),
+    "rouge":  (1.5, 9.0, "DANGER",        "🔴"),
 }
 
 SEUIL_DANGER = 1.50
@@ -268,16 +273,16 @@ SEASON_COLORS = {
     'Été': '#f87171',   'Automne': '#fb923c',
 }
 DANGER_COLORS = {
-    "Calme (<0.5m)":    "#10b981",
-    "Faible (0.5–1.5m)":"#f59e0b",
-    "Modéré (1.5–2.5m)":"#ef4444",
-    "Agité (2.5–4m)":   "#8b5cf6",
-    "Très agité (>4m)": "#6d28d9",
+    "Calme (<0.5m)":     "#10b981",
+    "Faible (0.5–1.5m)": "#f59e0b",
+    "Modéré (1.5–2.5m)": "#ef4444",
+    "Agité (2.5–4m)":    "#8b5cf6",
+    "Très agité (>4m)":  "#6d28d9",
 }
 ALERTE_COLORS = {
-    'Calme (< 1 m)':    '#10b981',
-    'Vigilance (1–2 m)':'#f59e0b',
-    'Danger (> 2 m)':   '#ef4444',
+    'Calme (< 1 m)':     '#10b981',
+    'Vigilance (1–2 m)': '#f59e0b',
+    'Danger (> 2 m)':    '#ef4444',
 }
 PLOTLY_THEME = dict(
     paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(12,24,41,0.6)",
@@ -393,6 +398,8 @@ hr{border:none;border-top:1px solid var(--border-s)!important;margin:1.5rem 0!im
 .alert-danger{background:rgba(239,68,68,.12);border:2px solid rgba(239,68,68,.5);}
 .alert-danger::before{background:linear-gradient(90deg,#ef4444,#f87171);}
 .log-console{background:#020c16;border:1px solid var(--border-s);border-radius:var(--r-md);padding:1rem 1.2rem;font-family:var(--fm);font-size:.75rem;color:#4ade80;max-height:220px;overflow-y:auto;line-height:1.7;}
+.tf-unavailable-banner{background:rgba(245,158,11,.08);border:2px solid rgba(245,158,11,.4);border-radius:var(--r-xl);padding:2rem 2.2rem;margin-bottom:1.5rem;position:relative;overflow:hidden;}
+.tf-unavailable-banner::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,#f59e0b,#fbbf24);}
 </style>
 """, unsafe_allow_html=True)
 
@@ -574,6 +581,14 @@ with st.sidebar:
         <div class="logo-sub">{T("app_subtitle")}</div>
     </div>""", unsafe_allow_html=True)
 
+    # Badge TF
+    if not TF_AVAILABLE:
+        st.markdown("""<div style="background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.3);
+            border-radius:8px;padding:6px 10px;font-size:.72rem;color:#fbbf24;margin-bottom:.8rem;">
+            ⚠️ <b>TensorFlow non disponible</b><br>
+            <span style="color:#94b8cc;">Prédictions désactivées · Python 3.14 détecté</span>
+        </div>""", unsafe_allow_html=True)
+
     st.markdown(f"**{T('model_data')}**")
     model_choice = st.radio("Modèle", [T("model1_label"), T("model2_label")], label_visibility="collapsed")
     is_m2 = "M2" in model_choice or "N2" in model_choice
@@ -645,7 +660,7 @@ with st.sidebar:
     st.markdown(f"**{T('geo_filters')}**")
     wilaya_filter = st.multiselect(T("wilaya"), all_wilayas, default=[], placeholder=T("all_f"))
     if wilaya_filter and data_ok:
-        wil_in      = ",".join(f"'{w}'" for w in wilaya_filter)
+        wil_in       = ",".join(f"'{w}'" for w in wilaya_filter)
         plages_dispo = q(f"SELECT DISTINCT NOM_PLAGE FROM {VIEW} WHERE NOM_WILAYA IN ({wil_in}) ORDER BY NOM_PLAGE")["NOM_PLAGE"].tolist()
     else:
         plages_dispo = all_plages
@@ -710,73 +725,90 @@ def show_kpis(wh=""):
     c8.metric(f"📐 {T('std')}",       f"{std_h:.3f} m")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# FONCTIONS PIPELINE PRÉDICTION M1
+# FONCTIONS PIPELINE PRÉDICTION M1 — protégées par TF_AVAILABLE
 # ═══════════════════════════════════════════════════════════════════════════════
-def asymmetric_huber_loss(delta=0.5, underestimate_penalty=3.0):
-    horizon_weights = tf.constant([1.0, 1.2, 1.5, 2.0], dtype=tf.float32)
-    def loss(y_true, y_pred):
+if TF_AVAILABLE:
+    def asymmetric_huber_loss(delta=0.5, underestimate_penalty=3.0):
+        horizon_weights = tf.constant([1.0, 1.2, 1.5, 2.0], dtype=tf.float32)
+        def loss(y_true, y_pred):
+            error     = y_true - y_pred
+            abs_error = tf.abs(error)
+            quadratic = tf.minimum(abs_error, delta)
+            linear    = abs_error - quadratic
+            huber     = 0.5 * quadratic**2 + delta * linear
+            weight_asym = tf.where(error > 0, tf.ones_like(error) * underestimate_penalty, tf.ones_like(error))
+            return tf.reduce_mean(huber * weight_asym * horizon_weights)
+        loss.__name__ = "asymmetric_huber"
+        return loss
+
+    def asymmetric_huber(y_true, y_pred, delta=1.0, alpha=2.5):
         error     = y_true - y_pred
         abs_error = tf.abs(error)
         quadratic = tf.minimum(abs_error, delta)
         linear    = abs_error - quadratic
-        huber     = 0.5 * quadratic**2 + delta * linear
-        weight_asym = tf.where(error > 0, tf.ones_like(error) * underestimate_penalty, tf.ones_like(error))
-        return tf.reduce_mean(huber * weight_asym * horizon_weights)
-    loss.__name__ = "asymmetric_huber"
-    return loss
+        loss_val  = 0.5 * tf.square(quadratic) + delta * linear
+        weight    = tf.where(error > 0, alpha, 1.0)
+        return tf.reduce_mean(loss_val * weight)
 
-def asymmetric_huber(y_true, y_pred, delta=1.0, alpha=2.5):
-    error     = y_true - y_pred
-    abs_error = tf.abs(error)
-    quadratic = tf.minimum(abs_error, delta)
-    linear    = abs_error - quadratic
-    loss_val  = 0.5 * tf.square(quadratic) + delta * linear
-    weight    = tf.where(error > 0, alpha, 1.0)
-    return tf.reduce_mean(loss_val * weight)
+    CUSTOM_OBJECTS = {
+        "asymmetric_huber":      asymmetric_huber,
+        "asymmetric_huber_loss": asymmetric_huber_loss(),
+        "loss":                  asymmetric_huber_loss(),
+    }
 
-CUSTOM_OBJECTS = {
-    "asymmetric_huber":      asymmetric_huber,
-    "asymmetric_huber_loss": asymmetric_huber_loss(),
-    "loss":                  asymmetric_huber_loss(),
-}
+    @st.cache_resource(show_spinner="Chargement modèle LSTM global...")
+    def load_global_lstm():
+        return tf.keras.models.load_model(LSTM_PATH, custom_objects=CUSTOM_OBJECTS, compile=False)
 
-@st.cache_resource(show_spinner="Chargement modèle LSTM global...")
-def load_global_lstm():
-    return tf.keras.models.load_model(LSTM_PATH, custom_objects=CUSTOM_OBJECTS, compile=False)
+    @st.cache_resource(show_spinner="Chargement scaler global...")
+    def load_scaler():
+        return joblib.load(SCALER_PATH)
 
-@st.cache_resource(show_spinner="Chargement scaler global...")
-def load_scaler():
-    return joblib.load(SCALER_PATH)
-
-def load_finetuned_lstm(plage_name: str):
-    base_dir  = os.path.dirname(LSTM_PATH)
-    safe_name = plage_name.replace(" ", "_")
-    model_path = os.path.join(base_dir, "plots", f"{safe_name}_lstm.keras")
-    if not os.path.exists(model_path):
-        candidates = glob.glob(os.path.join(base_dir, "plots", "*lstm*.keras"))
-        matched = [p for p in candidates if safe_name.lower() in os.path.basename(p).lower()]
-        if not matched:
+    def load_finetuned_lstm(plage_name: str):
+        base_dir   = os.path.dirname(LSTM_PATH)
+        safe_name  = plage_name.replace(" ", "_")
+        model_path = os.path.join(base_dir, "plots", f"{safe_name}_lstm.keras")
+        if not os.path.exists(model_path):
+            candidates = glob.glob(os.path.join(base_dir, "plots", "*lstm*.keras"))
+            matched = [p for p in candidates if safe_name.lower() in os.path.basename(p).lower()]
+            if not matched:
+                return None, False
+            model_path = matched[0]
+        try:
+            model = tf.keras.models.load_model(model_path, custom_objects=CUSTOM_OBJECTS, compile=False)
+            return model, True
+        except Exception as e:
+            st.warning(f"⚠️ Modèle local non chargeable : {e}. Fallback global.")
             return None, False
-        model_path = matched[0]
-    try:
-        model = tf.keras.models.load_model(model_path, custom_objects=CUSTOM_OBJECTS, compile=False)
-        return model, True
-    except Exception as e:
-        st.warning(f"⚠️ Modèle local non chargeable : {e}. Fallback global.")
-        return None, False
 
-def _run_inference(X_tensor, plage_name):
-    local_model, used_local = load_finetuned_lstm(plage_name)
-    if used_local and local_model is not None:
-        model_used = local_model
-        model_info = f"Fine-tuné — {plage_name}"
-    else:
-        model_used = load_global_lstm()
-        used_local = False
-        model_info = "Global (fallback)"
-    preds = model_used.predict(X_tensor, verbose=0)[0]
-    return preds, used_local, model_info
+    def _run_inference(X_tensor, plage_name):
+        local_model, used_local = load_finetuned_lstm(plage_name)
+        if used_local and local_model is not None:
+            model_used = local_model
+            model_info = f"Fine-tuné — {plage_name}"
+        else:
+            model_used = load_global_lstm()
+            used_local = False
+            model_info = "Global (fallback)"
+        preds = model_used.predict(X_tensor, verbose=0)[0]
+        return preds, used_local, model_info
 
+    def _prepare_window(df, scaler):
+        X = df[FEATURES].values.astype(np.float32)
+        X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+        X = scaler.transform(X)
+        X = np.clip(X, -10, 10)
+        if len(X) < WINDOW:
+            pad = np.tile(X[0], (WINDOW - len(X), 1))
+            X   = np.vstack([pad, X])
+        X = X[-WINDOW:]
+        return X.reshape(1, WINDOW, len(FEATURES))
+
+else:
+    def load_scaler():
+        return joblib.load(SCALER_PATH)
+
+# ── Fonctions communes (pas de TF requis) ────────────────────────────────────
 def _open_era5_file(path: str, lat: float, lon: float):
     def _sel_point(ds):
         if "latitude" in ds.coords and "longitude" in ds.coords:
@@ -950,21 +982,10 @@ def _build_features(df, lat: float, lon: float):
             df[feat] = 0.0
     return df[FEATURES + [c for c in df.columns if c not in FEATURES]]
 
-def _prepare_window(df, scaler):
-    X = df[FEATURES].values.astype(np.float32)
-    X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
-    X = scaler.transform(X)
-    X = np.clip(X, -10, 10)
-    if len(X) < WINDOW:
-        pad = np.tile(X[0], (WINDOW - len(X), 1))
-        X   = np.vstack([pad, X])
-    X = X[-WINDOW:]
-    return X.reshape(1, WINDOW, len(FEATURES))
-
 def _physical_calibration(preds, df_feat, pred_dt):
-    preds       = np.array(preds, dtype=float)
-    n           = len(df_feat)
-    month       = pred_dt.month
+    preds        = np.array(preds, dtype=float)
+    n            = len(df_feat)
+    month        = pred_dt.month
     window_sizes = [1, 6, 12, 24]
     wind_series  = df_feat["wind_speed"].values
     wind_trend   = float(np.polyfit(np.arange(min(12, n)), wind_series[-min(12, n):], 1)[0])
@@ -1042,6 +1063,50 @@ if page == T("realtime_pred"):
     pred_wants_m1 = (pred_model_page == PRED_M1_LABEL)
     pred_wants_m2 = (pred_model_page == PRED_M2_LABEL)
 
+    # ── TensorFlow non disponible ────────────────────────────────────────────
+    if not TF_AVAILABLE:
+        page_header("#f59e0b", "🔮", "Prédiction Temps Réel", "Module indisponible sur cet environnement")
+        st.markdown("""
+        <div class="tf-unavailable-banner">
+            <div style="font-size:2.5rem;margin-bottom:.6rem;">⚠️</div>
+            <div style="font-family:'Syne',sans-serif;font-size:1.3rem;font-weight:800;color:#fbbf24;margin-bottom:.5rem;">
+                TensorFlow non disponible
+            </div>
+            <div style="font-size:.88rem;color:#94b8cc;line-height:1.7;">
+                Streamlit Cloud utilise <strong>Python 3.14</strong>, incompatible avec TensorFlow 
+                (support max : Python 3.11).<br><br>
+                <strong>✅ Toutes les autres pages fonctionnent normalement</strong> 
+                (Analyse, Carte des dangers, Synthèse, Activités).<br><br>
+                <strong>Pour utiliser la prédiction temps réel :</strong>
+            </div>
+            <div style="background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.25);
+                border-radius:12px;padding:.8rem 1rem;margin-top:1rem;font-size:.82rem;color:#fde68a;">
+                👉 Lancez l'application <strong>en local</strong> avec Python 3.11 :<br><br>
+                <code style="background:rgba(0,0,0,.3);padding:2px 6px;border-radius:4px;">
+                conda create -n hsv python=3.11</code><br>
+                <code style="background:rgba(0,0,0,.3);padding:2px 6px;border-radius:4px;">
+                pip install tensorflow streamlit ...</code>
+            </div>
+        </div>""", unsafe_allow_html=True)
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("""<div class="info-card" style="border-left-color:#ef4444;">
+                <div class="title" style="color:#f87171;">❌ Incompatibilité détectée</div>
+                <div class="threshold-row"><span class="threshold-key">Python Cloud</span><span class="threshold-val" style="color:#f87171;">3.14 (incompatible TF)</span></div>
+                <div class="threshold-row"><span class="threshold-key">Python requis</span><span class="threshold-val" style="color:#34d399;">3.8 → 3.11</span></div>
+                <div class="threshold-row"><span class="threshold-key">TensorFlow</span><span class="threshold-val" style="color:#f87171;">Non installé</span></div>
+            </div>""", unsafe_allow_html=True)
+        with col2:
+            st.markdown("""<div class="info-card" style="border-left-color:#10b981;">
+                <div class="title" style="color:#34d399;">✅ Pages disponibles</div>
+                <div class="threshold-row"><span class="threshold-key">🏠 Accueil</span><span class="threshold-val" style="color:#34d399;">Fonctionnel</span></div>
+                <div class="threshold-row"><span class="threshold-key">📊 Analyse</span><span class="threshold-val" style="color:#34d399;">Fonctionnel</span></div>
+                <div class="threshold-row"><span class="threshold-key">🗺️ Carte</span><span class="threshold-val" style="color:#34d399;">Fonctionnel</span></div>
+                <div class="threshold-row"><span class="threshold-key">📋 Synthèse</span><span class="threshold-val" style="color:#34d399;">Fonctionnel</span></div>
+            </div>""", unsafe_allow_html=True)
+        st.stop()
+
     # CAS 1 — M2 demandé, M1 actif
     if pred_wants_m2 and not is_m2:
         st.markdown("""
@@ -1058,7 +1123,6 @@ if page == T("realtime_pred"):
                 <strong>🟣 M2 — ERA5 + CMEMS (1999–2023)</strong> puis revenez sur cette page.
             </div>
         </div>""", unsafe_allow_html=True)
-
         col_info1, col_info2 = st.columns(2)
         with col_info1:
             st.markdown("""<div class="info-card" style="border-left-color:#0ea5e9;">
@@ -1092,7 +1156,6 @@ if page == T("realtime_pred"):
                 <strong>🔵 M1 — ERA5 seul (1985–2023)</strong> puis revenez sur cette page.
             </div>
         </div>""", unsafe_allow_html=True)
-
         col_info1, col_info2 = st.columns(2)
         with col_info1:
             st.markdown("""<div class="info-card" style="border-left-color:#8b5cf6;">
@@ -1198,9 +1261,9 @@ if page == T("realtime_pred"):
         lon = st.number_input("Longitude", value=lon_default, format="%.4f")
 
         st.markdown("---")
-        today        = datetime.utcnow().date()
-        era5_cutoff  = today - timedelta(days=5)
-        max_date     = today + timedelta(days=1)
+        today       = datetime.utcnow().date()
+        era5_cutoff = today - timedelta(days=5)
+        max_date    = today + timedelta(days=1)
         default_date = today + timedelta(days=1)
 
         pred_date = st.date_input(
@@ -1247,10 +1310,10 @@ if page == T("realtime_pred"):
 
     if run_btn:
         try:
-            now_utc      = datetime.utcnow()
+            now_utc        = datetime.utcnow()
             era5_cutoff_dt = now_utc - timedelta(days=5)
-            window_start = pred_dt - timedelta(hours=WINDOW)
-            window_end   = pred_dt
+            window_start   = pred_dt - timedelta(hours=WINDOW)
+            window_end     = pred_dt
 
             progress = st.progress(0)
             status   = st.empty()
@@ -1377,8 +1440,8 @@ if page == T("realtime_pred"):
                     fig.add_annotation(x=f"t+{h}h", y=float(p), text=f"<b>{float(p):.2f}m</b>",
                                        showarrow=False, yshift=16, font=dict(size=11, color=marker_colors[i]))
 
-                src_label  = "ERA5 + Open-Meteo Marine" if use_forecast else "ERA5 Réanalyse"
-                model_lbl  = f'<span style="color:#7c3aed">🎯 Fine-tuné</span>' if used_local else '🌐 Global'
+                src_label = "ERA5 + Open-Meteo Marine" if use_forecast else "ERA5 Réanalyse"
+                model_lbl = f'<span style="color:#7c3aed">🎯 Fine-tuné</span>' if used_local else '🌐 Global'
                 fig.update_layout(
                     title=dict(text=f"Prévision HSV — {selected_plage} | {pred_date.strftime('%d/%m/%Y')} | {model_lbl}", font=dict(size=14)),
                     yaxis_title="Hauteur Significative des Vagues (m)",
@@ -1484,6 +1547,9 @@ elif page == T("home"):
             <span class="pill pill-amber">🔮 Prédiction Temps Réel M1 + M2</span>
         </div>
     </div>""", unsafe_allow_html=True)
+
+    if not TF_AVAILABLE:
+        st.warning("⚠️ **TensorFlow non disponible** — La page Prédiction Temps Réel est désactivée. Toutes les autres pages fonctionnent normalement.")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -1683,11 +1749,13 @@ elif page == T("danger_map"):
 st.markdown("---")
 model_info_footer = "ERA5 + CMEMS (M2) · 1999–2023" if is_m2 else "ERA5 (M1) · 1985–2023"
 lang_info         = {"fr":"Français","en":"English","ar":"العربية"}.get(st.session_state.get("lang","fr"),"Français")
+tf_info           = "TF ✅" if TF_AVAILABLE else "TF ⚠️ désactivé"
 st.markdown(f"""
 <div style="text-align:center;padding:1rem 0;font-size:.75rem;color:#4a7a96;">
     Système HSV · Côtes Algériennes · {model_info_footer} &nbsp;·&nbsp;
     LSTM + Transfer Learning &nbsp;·&nbsp;
     DuckDB + Streamlit + Plotly &nbsp;·&nbsp;
     Copernicus CDS ERA5 &nbsp;·&nbsp;
+    {tf_info} &nbsp;·&nbsp;
     🌐 {lang_info}
 </div>""", unsafe_allow_html=True)
