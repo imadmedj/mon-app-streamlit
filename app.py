@@ -91,6 +91,20 @@ if not os.path.exists(EXTRACT_PATH):
     if os.path.exists(extracted_folder):
         os.rename(extracted_folder, EXTRACT_PATH)
 
+
+# DEBUG TEMPORAIRE
+import glob
+parquets = glob.glob("data/**/*.parquet", recursive=True)
+st.write("=== Fichiers parquet trouvés ===")
+st.write(parquets)
+st.write("=== EXTRACT_PATH existe ? ===")
+st.write(os.path.exists(EXTRACT_PATH))
+st.write("=== Contenu de data/ ===")
+if os.path.exists("data"):
+    for root, dirs, files in os.walk("data"):
+        for f in files:
+            st.write(os.path.join(root, f))
+
 # Plots locaux fine-tunés
 BASE_DIR_PLOTS     = "plots"
 os.makedirs(BASE_DIR_PLOTS, exist_ok=True)
