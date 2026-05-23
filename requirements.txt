@@ -1,7 +1,12 @@
 streamlit
-numpy
 pandas
-scikit-learn
+numpy
 plotly
-joblib
 duckdb
+scikit-learn
+joblib
+xarray
+netCDF4
+h5netcdf
+cdsapi
+scipy
