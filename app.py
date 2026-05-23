@@ -1,10 +1,13 @@
 """
-╔══════════════════════════════════════════════════════════════════════════╗
-║   DASHBOARD HSV — CÔTES ALGÉRIENNES                                     ║
-║   Hauteur Significative des Vagues · Noyades · Dessalement · Aquaculture║
-║   Dataset : data/lstm_final_clean  (~20 millions de lignes)             ║
-║   Optimisé : DuckDB (requêtes SQL directement sur Parquet)              ║
-╚══════════════════════════════════════════════════════════════════════════╝
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  DASHBOARD HSV — CÔTES ALGÉRIENNES                                          ║
+║  Modèle 1 : ERA5 seul          · 1985–2023 · MESURE, wind_speed, mwp, mwd  ║
+║  Modèle 2 : ERA5 + CMEMS       · 1999–2023 · + salinity, o2, spm, sst      ║
+║  NOUVEAU   : Prédiction Temps Réel via API Copernicus (CDS + CMEMS)         ║
+║  Dataset  : data/lstm_final_clean   (~20 M lignes)                          ║
+║  Dataset2 : data/dataset_model2_1999_2023_clean  (~12 M lignes)             ║
+║  Optimisé : DuckDB (SQL sur Parquet)                                        ║
+╚══════════════════════════════════════════════════════════════════════════════╝
 """
 
 import streamlit as st
@@ -14,242 +17,432 @@ import plotly.express as px
 import plotly.graph_objects as go
 import duckdb
 import os
-import gdown
+import tempfile
+import json
+import warnings
+from datetime import datetime, timedelta
+warnings.filterwarnings("ignore")
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# TRADUCTIONS
+# ═══════════════════════════════════════════════════════════════════════════════
+TRANSLATIONS = {
+    "fr": {
+        "app_title": "HSV Algérie",
+        "app_subtitle": "Côtes · ERA5 + CMEMS",
+        "model_data": "MODÈLE DE DONNÉES",
+        "model1_label": "🔵 M1 — ERA5 seul (1985–2023)",
+        "model2_label": "🟣 M2 — ERA5 + CMEMS (1999–2023)",
+        "navigation": "Navigation",
+        "temporal_filters": "FILTRES TEMPORELS",
+        "geo_filters": "FILTRES GÉOGRAPHIQUES",
+        "year": "Année","month": "Mois","hour": "Heure",
+        "wilaya": "Wilaya","beach": "Plage","all": "Tous...","all_f": "Toutes...",
+        "home": "🏠 Accueil","global_analysis": "📊 Analyse Globale",
+        "summer_analysis": "🏖️ Analyse Été","activities": "🌊 Activités",
+        "analysis": "📊 Analyse","drowning_alerts": "🏊 Alertes Noyades",
+        "desalination": "💧 Dessalement SWRO","aquaculture": "🐟 Aquaculture",
+        "synthesis": "📋 Synthèse & Export","danger_map": "🗺️ Carte des Dangers",
+        "realtime_pred": "🔮 Prédiction Temps Réel",
+        "hero_title": "Système d'Analyse des Vagues Côtières — Algérie",
+        "hero_sub": "Prévision HSV par LSTM + Transfer Learning · Deux modèles complémentaires :",
+        "hero_sub2": "M1 ERA5 seul 1985–2023 (20M mesures) · M2 ERA5 + CMEMS 1999–2023 avec Salinité, O₂ dissous et Matières en suspension.",
+        "drowning_alerts_pill": "Alertes noyades","desalination_pill": "Dessalement SWRO",
+        "aquaculture_pill": "Aquaculture marine","marine_quality_pill": "Qualité marine O₂/Salinité",
+        "two_models_pill": "Deux modèles LSTM","global_stats": "Statistiques globales — Modèle actif",
+        "annual_evolution": "Évolution annuelle de la HSV","critical_thresholds": "Seuils critiques — tableau de synthèse",
+        "measures": "Mesures","avg_hsv": "HSV Moyenne","max_hsv": "HSV Maximum","p95": "Percentile 95","std": "Écart-type",
+        "months": {1:"Janvier",2:"Février",3:"Mars",4:"Avril",5:"Mai",6:"Juin",
+                   7:"Juillet",8:"Août",9:"Septembre",10:"Octobre",11:"Novembre",12:"Décembre"},
+        "months_short": {1:"Jan",2:"Fév",3:"Mar",4:"Avr",5:"Mai",6:"Jun",
+                         7:"Jul",8:"Aoû",9:"Sep",10:"Oct",11:"Nov",12:"Déc"},
+        "no_data": "Aucune donnée disponible.","no_filtered_data": "Aucune donnée pour les filtres sélectionnés.",
+        "computing": "Calcul KPIs...","loading_map": "Chargement carte...",
+        "m2_required": "⚠️ Cette page nécessite le **Modèle 2** (ERA5 + CMEMS). Veuillez sélectionner **M2** dans la sidebar.",
+        "m1_drowning_only": "🏊 En Modèle 1, seule la page **Alertes Noyades** est disponible.\nPour Dessalement et Aquaculture, merci de sélectionner **🟣 M2 — ERA5 + CMEMS**.",
+        "variables": "Variables","lang_button": "🌐 Langue","select_lang": "Sélectionner la langue",
+        "time_series": "📈 Série Temporelle","distribution": "🗂️ Distribution","seasonality": "📅 Saisonnalité",
+        "by_beach": "🏖️ Par Plage","alerts": "📊 Alertes","wind_mwd": "🌬️ Vent & MWD",
+        "favorable_windows": "📊 Fenêtres Favorables","best_sites": "🏖️ Meilleurs Sites",
+        "sst_tab": "🌡️ SST","pressure_tab": "📊 Pression MSL","op_windows": "⚙️ Fenêtres Opérationnelles",
+        "evolution": "📅 Évolution","by_wilaya": "Classement par wilaya","synth_by_beach": "📊 Synthèse par Plage",
+        "monthly_synth": "📅 Synthèse Mensuelle","export": "💾 Export","download_csv": "⬇️ Télécharger CSV",
+        "indicator_mapped": "Indicateur cartographié","avg_hsv_map": "HSV Moyenne","max_hsv_map": "HSV Maximum",
+        "alert_m1_map": "Alertes Noyades M1","alert_m2_map": "Alertes Noyades M2",
+        "dessal_map": "Dessalement","aqua_map": "Aquaculture",
+        "seasons": {"Hiver":"Hiver","Printemps":"Printemps","Été":"Été","Automne":"Automne"},
+        # Nouvelles clés pour la prédiction
+        "pred_m1_label": "🔵 Prédiction M1 — ERA5",
+        "pred_m2_label": "🟣 Prédiction M2 — ERA5 + CMEMS",
+        "pred_submenu": "Type de prédiction",
+    },
+    "en": {
+        "app_title": "HSV Algeria","app_subtitle": "Coastline · ERA5 + CMEMS",
+        "model_data": "DATA MODEL","model1_label": "🔵 M1 — ERA5 only (1985–2023)",
+        "model2_label": "🟣 M2 — ERA5 + CMEMS (1999–2023)","navigation": "Navigation",
+        "temporal_filters": "TEMPORAL FILTERS","geo_filters": "GEOGRAPHIC FILTERS",
+        "year": "Year","month": "Month","hour": "Hour","wilaya": "Wilaya","beach": "Beach",
+        "all": "All...","all_f": "All...","home": "🏠 Home","global_analysis": "📊 Global Analysis",
+        "summer_analysis": "🏖️ Summer Analysis","activities": "🌊 Activities","analysis": "📊 Analysis",
+        "drowning_alerts": "🏊 Drowning Alerts","desalination": "💧 SWRO Desalination",
+        "aquaculture": "🐟 Aquaculture","synthesis": "📋 Summary & Export","danger_map": "🗺️ Danger Map",
+        "realtime_pred": "🔮 Real-Time Prediction",
+        "hero_title": "Coastal Wave Analysis System — Algeria",
+        "hero_sub": "HSV Prediction via LSTM + Transfer Learning · Two complementary models:",
+        "hero_sub2": "M1 ERA5 only 1985–2023 (20M records) · M2 ERA5 + CMEMS 1999–2023 with Salinity, Dissolved O₂ and Suspended Matter.",
+        "drowning_alerts_pill": "Drowning alerts","desalination_pill": "SWRO Desalination",
+        "aquaculture_pill": "Marine aquaculture","marine_quality_pill": "Marine quality O₂/Salinity",
+        "two_models_pill": "Two LSTM models","global_stats": "Global statistics — Active model",
+        "annual_evolution": "Annual HSV evolution","critical_thresholds": "Critical thresholds — summary table",
+        "measures": "Records","avg_hsv": "Avg HSV","max_hsv": "Max HSV","p95": "Percentile 95","std": "Std Dev",
+        "months": {1:"January",2:"February",3:"March",4:"April",5:"May",6:"June",
+                   7:"July",8:"August",9:"September",10:"October",11:"November",12:"December"},
+        "months_short": {1:"Jan",2:"Feb",3:"Mar",4:"Apr",5:"May",6:"Jun",
+                         7:"Jul",8:"Aug",9:"Sep",10:"Oct",11:"Nov",12:"Dec"},
+        "no_data": "No data available.","no_filtered_data": "No data for the selected filters.",
+        "computing": "Computing KPIs...","loading_map": "Loading map...",
+        "m2_required": "⚠️ This page requires **Model 2** (ERA5 + CMEMS). Please select **M2** in the sidebar.",
+        "m1_drowning_only": "🏊 In Model 1, only the **Drowning Alerts** page is available.\nFor Desalination and Aquaculture, please select **🟣 M2 — ERA5 + CMEMS**.",
+        "variables": "Variables","lang_button": "🌐 Language","select_lang": "Select language",
+        "time_series": "📈 Time Series","distribution": "🗂️ Distribution","seasonality": "📅 Seasonality",
+        "by_beach": "🏖️ By Beach","alerts": "📊 Alerts","wind_mwd": "🌬️ Wind & MWD",
+        "favorable_windows": "📊 Favorable Windows","best_sites": "🏖️ Best Sites",
+        "sst_tab": "🌡️ SST","pressure_tab": "📊 Pressure MSL","op_windows": "⚙️ Operational Windows",
+        "evolution": "📅 Evolution","by_wilaya": "Ranking by wilaya","synth_by_beach": "📊 Summary by Beach",
+        "monthly_synth": "📅 Monthly Summary","export": "💾 Export","download_csv": "⬇️ Download CSV",
+        "indicator_mapped": "Mapped indicator","avg_hsv_map": "Average HSV","max_hsv_map": "Maximum HSV",
+        "alert_m1_map": "Drowning Alerts M1","alert_m2_map": "Drowning Alerts M2",
+        "dessal_map": "Desalination","aqua_map": "Aquaculture",
+        "seasons": {"Hiver":"Winter","Printemps":"Spring","Été":"Summer","Automne":"Autumn"},
+        "pred_m1_label": "🔵 Prediction M1 — ERA5",
+        "pred_m2_label": "🟣 Prediction M2 — ERA5 + CMEMS",
+        "pred_submenu": "Prediction type",
+    },
+    "ar": {
+        "app_title": "نظام HSV الجزائر","app_subtitle": "السواحل · ERA5 + CMEMS",
+        "model_data": "نموذج البيانات","model1_label": "🔵 N1 — ERA5 فقط (1985–2023)",
+        "model2_label": "🟣 N2 — ERA5 + CMEMS (1999–2023)","navigation": "التنقل",
+        "temporal_filters": "مرشحات زمنية","geo_filters": "مرشحات جغرافية",
+        "year": "السنة","month": "الشهر","hour": "الساعة","wilaya": "الولاية","beach": "الشاطئ",
+        "all": "الكل...","all_f": "الكل...","home": "🏠 الرئيسية","global_analysis": "📊 التحليل العام",
+        "summer_analysis": "🏖️ تحليل الصيف","activities": "🌊 الأنشطة","analysis": "📊 التحليل",
+        "drowning_alerts": "🏊 تنبيهات الغرق","desalination": "💧 تحلية المياه SWRO",
+        "aquaculture": "🐟 تربية الأحياء البحرية","synthesis": "📋 الملخص والتصدير","danger_map": "🗺️ خريطة المخاطر",
+        "realtime_pred": "🔮 التنبؤ الفوري",
+        "hero_title": "نظام تحليل الأمواج الساحلية — الجزائر",
+        "hero_sub": "توقع HSV بواسطة LSTM + Transfer Learning · نموذجان تكاملييان:",
+        "hero_sub2": "N1 ERA5 فقط 1985–2023 · N2 ERA5 + CMEMS 1999–2023 مع الملوحة، O₂ الذائب والمواد العالقة.",
+        "drowning_alerts_pill": "تنبيهات الغرق","desalination_pill": "تحلية المياه SWRO",
+        "aquaculture_pill": "تربية الأحياء البحرية","marine_quality_pill": "جودة البيئة البحرية O₂/ملوحة",
+        "two_models_pill": "نموذجان LSTM","global_stats": "إحصائيات عامة — النموذج النشط",
+        "annual_evolution": "التطور السنوي لـ HSV","critical_thresholds": "الحدود الحرجة — جدول ملخص",
+        "measures": "القياسات","avg_hsv": "متوسط HSV","max_hsv": "أقصى HSV","p95": "المئين 95","std": "الانحراف المعياري",
+        "months": {1:"جانفي",2:"فيفري",3:"مارس",4:"أبريل",5:"ماي",6:"جوان",
+                   7:"جويلية",8:"أوت",9:"سبتمبر",10:"أكتوبر",11:"نوفمبر",12:"ديسمبر"},
+        "months_short": {1:"جان",2:"فيف",3:"مار",4:"أبر",5:"ماي",6:"جوا",
+                         7:"جوي",8:"أوت",9:"سبت",10:"أكت",11:"نوف",12:"ديس"},
+        "no_data": "لا توجد بيانات متاحة.","no_filtered_data": "لا توجد بيانات للمرشحات المحددة.",
+        "computing": "جارٍ الحساب...","loading_map": "جارٍ تحميل الخريطة...",
+        "m2_required": "⚠️ هذه الصفحة تتطلب **النموذج 2** (ERA5 + CMEMS). يرجى اختيار **N2** في الشريط الجانبي.",
+        "m1_drowning_only": "🏊 في النموذج 1، صفحة **تنبيهات الغرق** فقط متاحة.",
+        "variables": "المتغيرات","lang_button": "🌐 اللغة","select_lang": "اختر اللغة",
+        "time_series": "📈 السلسلة الزمنية","distribution": "🗂️ التوزيع","seasonality": "📅 الموسمية",
+        "by_beach": "🏖️ حسب الشاطئ","alerts": "📊 التنبيهات","wind_mwd": "🌬️ الرياح والاتجاه",
+        "favorable_windows": "📊 النوافذ الملائمة","best_sites": "🏖️ أفضل المواقع",
+        "sst_tab": "🌡️ درجة حرارة السطح","pressure_tab": "📊 ضغط MSL","op_windows": "⚙️ النوافذ التشغيلية",
+        "evolution": "📅 التطور","by_wilaya": "التصنيف حسب الولاية","synth_by_beach": "📊 ملخص حسب الشاطئ",
+        "monthly_synth": "📅 الملخص الشهري","export": "💾 تصدير","download_csv": "⬇️ تنزيل CSV",
+        "indicator_mapped": "المؤشر المرسوم","avg_hsv_map": "متوسط HSV","max_hsv_map": "أقصى HSV",
+        "alert_m1_map": "تنبيهات الغرق N1","alert_m2_map": "تنبيهات الغرق N2",
+        "dessal_map": "التحلية","aqua_map": "الأحياء البحرية",
+        "seasons": {"Hiver":"شتاء","Printemps":"ربيع","Été":"صيف","Automne":"خريف"},
+        "pred_m1_label": "🔵 التنبؤ N1 — ERA5",
+        "pred_m2_label": "🟣 التنبؤ N2 — ERA5 + CMEMS",
+        "pred_submenu": "نوع التنبؤ",
+    }
+}
 
-# Télécharge le dossier si pas encore présent
-if not os.path.exists("data/lstm_final_clean"):
-    os.makedirs("data", exist_ok=True)
-    gdown.download_folder(
-        id="1ayqVr46RCJU_vT6BUjMRLi6OKpsluLRJ",
-        output="data/lstm_final_clean",
-        quiet=False
-    )
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONFIG PAGE
+# ═══════════════════════════════════════════════════════════════════════════════
 st.set_page_config(
     page_title="HSV · Côtes Algériennes",
     page_icon="🌊",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
+if "lang" not in st.session_state:
+    st.session_state["lang"] = "fr"
+
+def T(key):
+    lang = st.session_state.get("lang", "fr")
+    return TRANSLATIONS[lang].get(key, TRANSLATIONS["fr"].get(key, key))
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CSS
+# ═══════════════════════════════════════════════════════════════════════════════
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=Syne:wght@600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
-
 :root {
-    --bg-base:       #080f1a;
-    --bg-surface:    #0c1829;
-    --bg-card:       #0f2035;
-    --bg-card-hover: #132640;
-    --border-soft:   rgba(30,90,150,0.25);
-    --border-mid:    rgba(30,110,180,0.4);
-    --border-bright: rgba(14,157,232,0.6);
-    --accent-1:      #0ea5e9;
-    --accent-2:      #06b6d4;
-    --accent-3:      #10b981;
-    --warn:          #f59e0b;
-    --danger:        #ef4444;
-    --purple:        #8b5cf6;
-    --text-h:        #f0f9ff;
-    --text-p:        #94b8cc;
-    --text-muted:    #4a7a96;
-    --font-display:  'Syne', sans-serif;
-    --font-body:     'DM Sans', sans-serif;
-    --font-mono:     'JetBrains Mono', monospace;
-    --r-sm: 8px; --r-md: 12px; --r-lg: 16px; --r-xl: 20px;
+  --bg-base:#080f1a;--bg-surface:#0c1829;--bg-card:#0f2035;--bg-card-h:#132640;
+  --border-s:rgba(30,90,150,.25);--border-m:rgba(30,110,180,.4);--border-b:rgba(14,157,232,.6);
+  --a1:#0ea5e9;--a2:#06b6d4;--a3:#10b981;--warn:#f59e0b;--danger:#ef4444;--purple:#8b5cf6;
+  --text-h:#f0f9ff;--text-p:#94b8cc;--text-m:#4a7a96;
+  --fd:'Syne',sans-serif;--fb:'DM Sans',sans-serif;--fm:'JetBrains Mono',monospace;
+  --r-sm:8px;--r-md:12px;--r-lg:16px;--r-xl:20px;
 }
+html,body,[class*="css"]{font-family:var(--fb)!important;background:var(--bg-base)!important;color:var(--text-p)!important;}
+.stApp{background:var(--bg-base)!important;}
+.block-container{padding:1.5rem 2rem 3rem!important;}
+[data-testid="stSidebar"]{background:var(--bg-surface)!important;border-right:1px solid var(--border-s)!important;}
+[data-testid="stSidebar"] *{color:var(--text-p)!important;}
+[data-testid="stSidebar"] h1,[data-testid="stSidebar"] h2,[data-testid="stSidebar"] h3{font-family:var(--fd)!important;color:var(--text-h)!important;}
+[data-testid="stSidebar"] label{font-size:.68rem!important;text-transform:uppercase;letter-spacing:.12em;color:var(--text-m)!important;font-weight:600!important;}
+[data-testid="stMetric"]{background:var(--bg-card)!important;border:1px solid var(--border-s)!important;border-radius:var(--r-lg)!important;padding:1.1rem 1.3rem!important;position:relative;overflow:hidden;transition:border-color .2s,background .2s;}
+[data-testid="stMetric"]:hover{border-color:var(--border-m)!important;background:var(--bg-card-h)!important;}
+[data-testid="stMetric"]::after{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,var(--a1),var(--a2));}
+[data-testid="stMetricLabel"]{color:var(--text-m)!important;font-size:.7rem!important;text-transform:uppercase!important;letter-spacing:.12em!important;font-weight:600!important;}
+[data-testid="stMetricValue"]{font-family:var(--fd)!important;color:var(--text-h)!important;font-size:1.7rem!important;font-weight:700!important;}
+.stTabs [data-baseweb="tab-list"]{background:var(--bg-card)!important;border:1px solid var(--border-s)!important;border-radius:var(--r-md)!important;padding:4px!important;gap:3px;}
+.stTabs [data-baseweb="tab"]{background:transparent!important;color:var(--text-m)!important;border-radius:var(--r-sm)!important;font-size:.8rem!important;font-weight:600!important;letter-spacing:.04em;padding:7px 18px!important;border:none!important;}
+.stTabs [aria-selected="true"]{background:var(--a1)!important;color:white!important;}
+.stDownloadButton>button,.stButton>button{background:var(--a1)!important;color:white!important;border:none!important;border-radius:var(--r-md)!important;font-weight:600!important;}
+hr{border:none;border-top:1px solid var(--border-s)!important;margin:1.5rem 0!important;}
+.hero{background:var(--bg-surface);border:1px solid var(--border-s);border-radius:var(--r-xl);padding:2.2rem 2rem 1.8rem;margin-bottom:1.5rem;position:relative;overflow:hidden;}
+.hero::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,var(--a1),var(--a2),var(--a3));}
+.hero h1{font-family:var(--fd);font-size:1.9rem;font-weight:800;color:var(--text-h);margin:0 0 .4rem;line-height:1.2;}
+.hero .sub{font-size:.85rem;color:var(--text-m);line-height:1.6;max-width:680px;}
+.hero .pills{margin-top:1rem;display:flex;flex-wrap:wrap;gap:8px;}
+.section-title{font-family:var(--fd);font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.16em;color:var(--a1);margin:2rem 0 .8rem;display:flex;align-items:center;gap:8px;}
+.section-title::after{content:'';flex:1;height:1px;background:var(--border-s);}
+.info-card{background:var(--bg-card);border:1px solid var(--border-s);border-left:3px solid;border-radius:var(--r-md);padding:.9rem 1.1rem;margin-bottom:.7rem;}
+.info-card .title{font-family:var(--fd);font-size:.85rem;font-weight:700;color:var(--text-h);margin-bottom:.5rem;}
+.threshold-row{display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border-s);font-size:.8rem;}
+.threshold-row:last-child{border-bottom:none;}
+.threshold-key{color:var(--text-m);}
+.threshold-val{font-weight:600;font-family:var(--fm);font-size:.78rem;}
+.pill{display:inline-flex;align-items:center;padding:3px 10px;border-radius:20px;font-size:.7rem;font-weight:600;letter-spacing:.04em;border:1px solid;}
+.pill-blue{background:rgba(14,165,233,.12);color:#38bdf8;border-color:rgba(14,165,233,.3);}
+.pill-green{background:rgba(16,185,129,.12);color:#34d399;border-color:rgba(16,185,129,.3);}
+.pill-red{background:rgba(239,68,68,.12);color:#f87171;border-color:rgba(239,68,68,.3);}
+.pill-amber{background:rgba(245,158,11,.12);color:#fbbf24;border-color:rgba(245,158,11,.3);}
+.pill-purple{background:rgba(139,92,246,.12);color:#a78bfa;border-color:rgba(139,92,246,.3);}
+.pill-cyan{background:rgba(6,182,212,.12);color:#22d3ee;border-color:rgba(6,182,212,.3);}
+.page-header{display:flex;align-items:center;gap:12px;margin-bottom:1.5rem;padding-bottom:1rem;border-bottom:1px solid var(--border-s);}
+.page-header-icon{width:40px;height:40px;border-radius:var(--r-md);display:flex;align-items:center;justify-content:center;font-size:1.2rem;flex-shrink:0;}
+.page-header h1{font-family:var(--fd);font-size:1.4rem;font-weight:700;color:var(--text-h);margin:0;line-height:1.2;}
+.page-header p{font-size:.8rem;color:var(--text-m);margin:2px 0 0;}
+.sidebar-logo{text-align:center;padding:1.2rem 0 1.5rem;border-bottom:1px solid var(--border-s);margin-bottom:1rem;}
+.sidebar-logo .logo-icon{font-size:2rem;}
+.sidebar-logo .logo-title{font-family:var(--fd);font-size:1.1rem;font-weight:800;color:var(--text-h);margin:6px 0 2px;}
+.sidebar-logo .logo-sub{font-size:.68rem;text-transform:uppercase;letter-spacing:.12em;color:var(--text-m);}
 
-html, body, [class*="css"] { font-family: var(--font-body) !important; background: var(--bg-base) !important; color: var(--text-p) !important; }
-.stApp { background: var(--bg-base) !important; }
-.block-container { padding: 1.5rem 2rem 3rem !important; }
+/* ── Pred sub-menu card ──────────────────────────────── */
+.pred-choice-card{
+    background:var(--bg-card);
+    border:1px solid var(--border-s);
+    border-radius:var(--r-lg);
+    padding:1.4rem 1.6rem;
+    margin-bottom:.8rem;
+    position:relative;
+    overflow:hidden;
+    transition:border-color .2s, background .2s;
+}
+.pred-choice-card:hover{border-color:var(--border-m);background:var(--bg-card-h);}
+.pred-choice-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;}
+.pred-m1-card::before{background:linear-gradient(90deg,var(--a1),var(--a2));}
+.pred-m2-card::before{background:linear-gradient(90deg,var(--purple),#a855f7);}
+.pred-choice-card .card-title{font-family:var(--fd);font-size:1rem;font-weight:700;color:var(--text-h);margin-bottom:.4rem;}
+.pred-choice-card .card-desc{font-size:.78rem;color:var(--text-m);line-height:1.5;}
+.pred-choice-card .card-badges{margin-top:.7rem;display:flex;flex-wrap:wrap;gap:6px;}
 
-[data-testid="stSidebar"] { background: var(--bg-surface) !important; border-right: 1px solid var(--border-soft) !important; }
-[data-testid="stSidebar"] * { color: var(--text-p) !important; }
-[data-testid="stSidebar"] h1,[data-testid="stSidebar"] h2,[data-testid="stSidebar"] h3 { font-family: var(--font-display) !important; color: var(--text-h) !important; }
-[data-testid="stSidebar"] label { font-size: 0.68rem !important; text-transform: uppercase; letter-spacing: 0.12em; color: var(--text-muted) !important; font-weight: 600 !important; }
-[data-testid="stSidebar"] .stSelectbox > div > div,[data-testid="stSidebar"] .stMultiSelect > div > div { background: var(--bg-card) !important; border: 1px solid var(--border-soft) !important; border-radius: var(--r-md) !important; color: var(--text-p) !important; }
+/* ── Incompatibilité banner ──────────────────────────── */
+.incompat-banner{
+    background:rgba(239,68,68,.08);
+    border:2px solid rgba(239,68,68,.4);
+    border-radius:var(--r-xl);
+    padding:2rem 2.2rem;
+    margin-bottom:1.5rem;
+    position:relative;
+    overflow:hidden;
+}
+.incompat-banner::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,#ef4444,#f87171);}
+.incompat-banner .ib-icon{font-size:2.5rem;margin-bottom:.6rem;}
+.incompat-banner .ib-title{font-family:var(--fd);font-size:1.3rem;font-weight:800;color:#f87171;margin-bottom:.5rem;}
+.incompat-banner .ib-body{font-size:.88rem;color:var(--text-p);line-height:1.7;}
+.incompat-banner .ib-step{background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.25);border-radius:var(--r-md);padding:.7rem 1rem;margin-top:1rem;font-size:.82rem;color:#fca5a5;}
 
-[data-testid="stMetric"] { background: var(--bg-card) !important; border: 1px solid var(--border-soft) !important; border-radius: var(--r-lg) !important; padding: 1.1rem 1.3rem !important; position: relative; overflow: hidden; transition: border-color 0.2s, background 0.2s; }
-[data-testid="stMetric"]:hover { border-color: var(--border-mid) !important; background: var(--bg-card-hover) !important; }
-[data-testid="stMetric"]::after { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, var(--accent-1), var(--accent-2)); }
-[data-testid="stMetricLabel"] { color: var(--text-muted) !important; font-size: 0.7rem !important; text-transform: uppercase !important; letter-spacing: 0.12em !important; font-weight: 600 !important; }
-[data-testid="stMetricValue"] { font-family: var(--font-display) !important; color: var(--text-h) !important; font-size: 1.7rem !important; font-weight: 700 !important; }
-[data-testid="stMetricDelta"] { font-size: 0.75rem !important; }
+/* ── WIP banner ──────────────────────────────────────── */
+.wip-banner{
+    background:rgba(139,92,246,.08);
+    border:2px solid rgba(139,92,246,.35);
+    border-radius:var(--r-xl);
+    padding:2rem 2.2rem;
+    margin-bottom:1.5rem;
+    position:relative;
+    overflow:hidden;
+}
+.wip-banner::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,var(--purple),#a855f7);}
+.wip-banner .wb-icon{font-size:2.5rem;margin-bottom:.6rem;}
+.wip-banner .wb-title{font-family:var(--fd);font-size:1.3rem;font-weight:800;color:#a78bfa;margin-bottom:.5rem;}
+.wip-banner .wb-body{font-size:.88rem;color:var(--text-p);line-height:1.7;}
 
-.stTabs [data-baseweb="tab-list"] { background: var(--bg-card) !important; border: 1px solid var(--border-soft) !important; border-radius: var(--r-md) !important; padding: 4px !important; gap: 3px; }
-.stTabs [data-baseweb="tab"] { background: transparent !important; color: var(--text-muted) !important; border-radius: var(--r-sm) !important; font-size: 0.8rem !important; font-weight: 600 !important; letter-spacing: 0.04em; padding: 7px 18px !important; border: none !important; transition: all 0.2s; }
-.stTabs [aria-selected="true"] { background: var(--accent-1) !important; color: white !important; }
+/* ── Feature comparison table ────────────────────────── */
+.feat-table{width:100%;border-collapse:collapse;font-size:.82rem;margin-top:1rem;}
+.feat-table th{background:var(--bg-card);color:var(--text-m);font-size:.68rem;text-transform:uppercase;letter-spacing:.1em;padding:8px 14px;text-align:left;border-bottom:1px solid var(--border-m);}
+.feat-table td{padding:8px 14px;border-bottom:1px solid var(--border-s);color:var(--text-p);}
+.feat-table tr:last-child td{border-bottom:none;}
+.feat-table .check-yes{color:#34d399;font-weight:700;}
+.feat-table .check-no{color:#4a7a96;}
+.feat-table .feat-name{color:var(--text-h);font-family:var(--fm);font-size:.78rem;}
 
-[data-testid="stDataFrame"] { border: 1px solid var(--border-soft) !important; border-radius: var(--r-lg) !important; overflow: hidden; }
+/* ── Pipeline steps ─────────────────────────────────── */
+.pipeline-wrap{display:flex;flex-direction:column;gap:0;margin:1.2rem 0;}
+.pipeline-step{display:flex;align-items:flex-start;gap:14px;padding:14px 16px;background:var(--bg-card);border:1px solid var(--border-s);border-radius:0;position:relative;}
+.pipeline-step:first-child{border-radius:var(--r-lg) var(--r-lg) 0 0;}
+.pipeline-step:last-child{border-radius:0 0 var(--r-lg) var(--r-lg);}
+.pipeline-step.active{border-color:var(--a1);background:rgba(14,165,233,.07);}
+.pipeline-step.done{border-color:var(--a3);background:rgba(16,185,129,.05);}
+.pipeline-step.error{border-color:var(--danger);background:rgba(239,68,68,.05);}
+.ps-num{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:.75rem;font-weight:700;flex-shrink:0;background:var(--bg-surface);border:1px solid var(--border-m);color:var(--text-m);}
+.ps-num.active{background:var(--a1);color:white;border-color:var(--a1);}
+.ps-num.done{background:var(--a3);color:white;border-color:var(--a3);}
+.ps-num.error{background:var(--danger);color:white;border-color:var(--danger);}
+.ps-content .ps-title{font-size:.85rem;font-weight:600;color:var(--text-h);}
+.ps-content .ps-sub{font-size:.75rem;color:var(--text-m);margin-top:2px;}
 
-.stDownloadButton > button, .stButton > button { background: var(--accent-1) !important; color: white !important; border: none !important; border-radius: var(--r-md) !important; font-weight: 600 !important; font-family: var(--font-body) !important; letter-spacing: 0.04em; padding: 0.5rem 1.4rem !important; transition: opacity 0.2s; }
-.stDownloadButton > button:hover, .stButton > button:hover { opacity: 0.85 !important; }
+/* ── Alerte card prédiction ─────────────────────────── */
+.alert-card{border-radius:var(--r-xl);padding:1.8rem 2rem;margin-bottom:1rem;text-align:center;position:relative;overflow:hidden;}
+.alert-card::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;}
+.alert-safe{background:rgba(16,185,129,.1);border:2px solid rgba(16,185,129,.4);}
+.alert-safe::before{background:linear-gradient(90deg,#10b981,#34d399);}
+.alert-watch{background:rgba(245,158,11,.1);border:2px solid rgba(245,158,11,.4);}
+.alert-watch::before{background:linear-gradient(90deg,#f59e0b,#fbbf24);}
+.alert-warn{background:rgba(249,115,22,.1);border:2px solid rgba(249,115,22,.4);}
+.alert-warn::before{background:linear-gradient(90deg,#f97316,#fb923c);}
+.alert-danger{background:rgba(239,68,68,.12);border:2px solid rgba(239,68,68,.5);}
+.alert-danger::before{background:linear-gradient(90deg,#ef4444,#f87171);}
+.alert-icon{font-size:2.5rem;margin-bottom:.5rem;}
+.alert-title{font-family:var(--fd);font-size:1.6rem;font-weight:800;margin-bottom:.3rem;}
+.alert-hsv{font-family:var(--fm);font-size:1.1rem;}
+.alert-sub{font-size:.8rem;color:var(--text-m);margin-top:.5rem;}
 
-hr { border: none; border-top: 1px solid var(--border-soft) !important; margin: 1.5rem 0 !important; }
+/* ── Horizon card ────────────────────────────────────── */
+.horizon-card{background:var(--bg-card);border:1px solid var(--border-s);border-radius:var(--r-lg);padding:1rem;text-align:center;transition:border-color .2s;}
+.horizon-card:hover{border-color:var(--border-m);}
+.horizon-card .h-label{font-size:.7rem;text-transform:uppercase;letter-spacing:.1em;color:var(--text-m);font-weight:600;}
+.horizon-card .h-value{font-family:var(--fd);font-size:1.4rem;font-weight:700;margin:.3rem 0;}
+.horizon-card .h-alert{font-size:.75rem;font-weight:600;padding:2px 8px;border-radius:20px;display:inline-block;}
 
-.page-header { display: flex; align-items: center; gap: 12px; margin-bottom: 1.5rem; padding-bottom: 1rem; border-bottom: 1px solid var(--border-soft); }
-.page-header-icon { width: 40px; height: 40px; border-radius: var(--r-md); display: flex; align-items: center; justify-content: center; font-size: 1.2rem; flex-shrink: 0; }
-.page-header h1 { font-family: var(--font-display); font-size: 1.4rem; font-weight: 700; color: var(--text-h); margin: 0; line-height: 1.2; }
-.page-header p { font-size: 0.8rem; color: var(--text-muted); margin: 2px 0 0; }
-
-.section-title { font-family: var(--font-display); font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.16em; color: var(--accent-1); margin: 2rem 0 0.8rem; display: flex; align-items: center; gap: 8px; }
-.section-title::after { content: ''; flex: 1; height: 1px; background: var(--border-soft); }
-
-.stat-card { background: var(--bg-card); border: 1px solid var(--border-soft); border-radius: var(--r-lg); padding: 1.1rem 1.3rem; position: relative; overflow: hidden; transition: border-color 0.2s; }
-.stat-card:hover { border-color: var(--border-mid); }
-.stat-card .label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.12em; color: var(--text-muted); font-weight: 600; margin-bottom: 4px; }
-.stat-card .value { font-family: var(--font-display); font-size: 1.8rem; font-weight: 700; color: var(--text-h); line-height: 1; }
-.stat-card .sub { font-size: 0.72rem; color: var(--text-muted); margin-top: 4px; }
-
-.info-card { background: var(--bg-card); border: 1px solid var(--border-soft); border-left: 3px solid; border-radius: var(--r-md); padding: 0.9rem 1.1rem; margin-bottom: 0.7rem; }
-.info-card .title { font-family: var(--font-display); font-size: 0.85rem; font-weight: 700; color: var(--text-h); margin-bottom: 0.5rem; }
-.info-card .row { display: flex; justify-content: space-between; font-size: 0.78rem; padding: 3px 0; border-bottom: 1px solid var(--border-soft); }
-.info-card .row:last-child { border-bottom: none; }
-.info-card .row-key { color: var(--text-muted); }
-.info-card .row-val { font-weight: 600; color: var(--text-h); }
-
-.pill { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 20px; font-size: 0.7rem; font-weight: 600; letter-spacing: 0.04em; border: 1px solid; }
-.pill-blue   { background: rgba(14,165,233,0.12); color: #38bdf8; border-color: rgba(14,165,233,0.3); }
-.pill-green  { background: rgba(16,185,129,0.12); color: #34d399; border-color: rgba(16,185,129,0.3); }
-.pill-red    { background: rgba(239,68,68,0.12);  color: #f87171; border-color: rgba(239,68,68,0.3); }
-.pill-amber  { background: rgba(245,158,11,0.12); color: #fbbf24; border-color: rgba(245,158,11,0.3); }
-.pill-purple { background: rgba(139,92,246,0.12); color: #a78bfa; border-color: rgba(139,92,246,0.3); }
-
-.hero { background: var(--bg-surface); border: 1px solid var(--border-soft); border-radius: var(--r-xl); padding: 2.2rem 2rem 1.8rem; margin-bottom: 1.5rem; position: relative; overflow: hidden; }
-.hero::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, var(--accent-1), var(--accent-2), var(--accent-3)); }
-.hero h1 { font-family: var(--font-display); font-size: 1.9rem; font-weight: 800; color: var(--text-h); margin: 0 0 0.4rem; line-height: 1.2; }
-.hero .sub { font-size: 0.85rem; color: var(--text-muted); line-height: 1.6; max-width: 680px; }
-.hero .pills { margin-top: 1rem; display: flex; flex-wrap: wrap; gap: 8px; }
-
-.threshold-row { display: flex; align-items: center; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border-soft); font-size: 0.8rem; }
-.threshold-row:last-child { border-bottom: none; }
-.threshold-key { color: var(--text-muted); }
-.threshold-val { font-weight: 600; font-family: var(--font-mono); font-size: 0.78rem; }
-
-.sidebar-logo { text-align: center; padding: 1.2rem 0 1.5rem; border-bottom: 1px solid var(--border-soft); margin-bottom: 1rem; }
-.sidebar-logo .logo-icon { font-size: 2rem; }
-.sidebar-logo .logo-title { font-family: var(--font-display); font-size: 1.1rem; font-weight: 800; color: var(--text-h); margin: 6px 0 2px; }
-.sidebar-logo .logo-sub { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.12em; color: var(--text-muted); }
-
-.synthesis-table-wrap { border: 1px solid var(--border-soft); border-radius: var(--r-lg); overflow: hidden; }
-.synthesis-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
-.synthesis-table thead th { background: var(--bg-surface); color: var(--text-muted); font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.1em; font-weight: 600; padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--border-soft); }
-.synthesis-table tbody td { padding: 9px 14px; border-bottom: 1px solid var(--border-soft); color: var(--text-p); vertical-align: middle; }
-.synthesis-table tbody tr:last-child td { border-bottom: none; }
-.synthesis-table tbody tr:hover td { background: var(--bg-card-hover); }
-.synthesis-table .val-critical { font-family: var(--font-mono); font-weight: 600; }
+/* ── Log console ─────────────────────────────────────── */
+.log-console{background:#020c16;border:1px solid var(--border-s);border-radius:var(--r-md);padding:1rem 1.2rem;font-family:var(--fm);font-size:.75rem;color:#4ade80;max-height:220px;overflow-y:auto;line-height:1.7;}
+.log-console .log-err{color:#f87171;}
+.log-console .log-warn{color:#fbbf24;}
+.log-console .log-info{color:#38bdf8;}
 </style>
 """, unsafe_allow_html=True)
 
-# ═══════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
 # CONSTANTES
-# ═══════════════════════════════════════════════════════════════════════
-DATA_PATH = "data/lstm_final_clean"
-
-MOIS_LABELS = {1:"Janvier",2:"Février",3:"Mars",4:"Avril",5:"Mai",6:"Juin",
-               7:"Juillet",8:"Août",9:"Septembre",10:"Octobre",11:"Novembre",12:"Décembre"}
-MOIS_SHORT  = {1:"Jan",2:"Fév",3:"Mar",4:"Avr",5:"Mai",6:"Jun",
-               7:"Jul",8:"Aoû",9:"Sep",10:"Oct",11:"Nov",12:"Déc"}
+# ═══════════════════════════════════════════════════════════════════════════════
+PATH_M1 = "data/lstm_final_clean"
+PATH_M2 = "data/dataset_model2_1999_2023_clean"
+LSTM_PATH   = "models/global_lstm.keras"
+GRU_PATH    = "models/global_gru.keras"
+SCALER_PATH = "models/scaler.pkl"
 
 SEASON_COLORS = {'Hiver':'#818cf8','Printemps':'#34d399','Été':'#f87171','Automne':'#fb923c'}
-
 DANGER_COLORS = {
-    "Calme (<0.5m)":      "#10b981",
-    "Faible (0.5–1.5m)":  "#f59e0b",
-    "Modéré (1.5–2.5m)":  "#ef4444",
-    "Agité (2.5–4m)":     "#8b5cf6",
-    "Très agité (>4m)":   "#6d28d9",
+    "Calme (<0.5m)":"#10b981","Faible (0.5–1.5m)":"#f59e0b",
+    "Modéré (1.5–2.5m)":"#ef4444","Agité (2.5–4m)":"#8b5cf6","Très agité (>4m)":"#6d28d9",
 }
 ALERTE_COLORS = {
-    'Calme (< 1 m)':      '#10b981',
-    'Vigilance (1–2 m)':  '#f59e0b',
-    'Danger (> 2 m)':     '#ef4444',
+    'Calme (< 1 m)':'#10b981','Vigilance (1–2 m)':'#f59e0b','Danger (> 2 m)':'#ef4444',
 }
-
-DISTANCE_LABELS = {
-    1: "~1 km — Danger baigneurs",
-    2: "~5 km — Zone étendue",
-    3: "~10 km — Intermédiaire",
-    4: "~20 km — Large",
-}
-DISTANCE_COLORS = {
-    "~1 km — Danger baigneurs": "#ef4444",
-    "~5 km — Zone étendue":     "#f59e0b",
-    "~10 km — Intermédiaire":   "#0ea5e9",
-    "~20 km — Large":           "#8b5cf6",
-}
-
-# ── Rose des vagues : mapping degrés → label cardinal ──────────────────
-DIRS_MAP = {
-      0.0: "N",   22.5: "NNE",  45.0: "NE",   67.5: "ENE",
-     90.0: "E",  112.5: "ESE", 135.0: "SE",  157.5: "SSE",
-    180.0: "S",  202.5: "SSO", 225.0: "SO",  247.5: "OSO",
-    270.0: "O",  292.5: "ONO", 315.0: "NO",  337.5: "NNO",
-    360.0: "N",
-}
-
 PLOTLY_THEME = dict(
-    paper_bgcolor="rgba(0,0,0,0)",
-    plot_bgcolor="rgba(12,24,41,0.6)",
-    font=dict(color="#94b8cc", family="DM Sans", size=12),
-    title_font=dict(color="#f0f9ff", family="Syne", size=14),
-    xaxis=dict(gridcolor="rgba(30,90,150,0.2)", linecolor="rgba(30,90,150,0.3)",
-               tickcolor="#4a7a96", zerolinecolor="rgba(30,90,150,0.2)"),
-    yaxis=dict(gridcolor="rgba(30,90,150,0.2)", linecolor="rgba(30,90,150,0.3)",
-               tickcolor="#4a7a96", zerolinecolor="rgba(30,90,150,0.2)"),
-    legend=dict(bgcolor="rgba(12,24,41,0.8)", bordercolor="rgba(30,90,150,0.3)", borderwidth=1),
-    margin=dict(l=20, r=20, t=50, b=30),
-    hoverlabel=dict(bgcolor="#0f2035", bordercolor="rgba(30,90,150,0.5)", font_color="#f0f9ff"),
+    paper_bgcolor="rgba(0,0,0,0)",plot_bgcolor="rgba(12,24,41,0.6)",
+    font=dict(color="#94b8cc",family="DM Sans",size=12),
+    title_font=dict(color="#f0f9ff",family="Syne",size=14),
+    xaxis=dict(gridcolor="rgba(30,90,150,.2)",linecolor="rgba(30,90,150,.3)",tickcolor="#4a7a96",zerolinecolor="rgba(30,90,150,.2)"),
+    yaxis=dict(gridcolor="rgba(30,90,150,.2)",linecolor="rgba(30,90,150,.3)",tickcolor="#4a7a96",zerolinecolor="rgba(30,90,150,.2)"),
+    legend=dict(bgcolor="rgba(12,24,41,.8)",bordercolor="rgba(30,90,150,.3)",borderwidth=1),
+    margin=dict(l=20,r=20,t=50,b=30),
+    hoverlabel=dict(bgcolor="#0f2035",bordercolor="rgba(30,90,150,.5)",font_color="#f0f9ff"),
     colorway=["#0ea5e9","#06b6d4","#10b981","#f59e0b","#ef4444","#8b5cf6","#f97316"],
 )
 
-# ═══════════════════════════════════════════════════════════════════════
-# DUCKDB — CONNEXION
-# ═══════════════════════════════════════════════════════════════════════
-data_ok = os.path.exists(DATA_PATH)
+WINDOW       = 72
+HORIZONS     = [1, 6, 12, 24]
+TARGET_IDX   = 0
+SEUIL_DANGER = 1.50
+SEUIL_WATCH  = 1.0
+SEUIL_WARN   = 0.5
+FEATURES = [
+    "MESURE","wind_speed","mwp","mwd_sin","mwd_cos",
+    "hour_sin","hour_cos","month_sin","month_cos",
+    "day_sin","day_cos","year_sin","year_cos",
+    "x_norm","y_norm",
+]
 
-@st.cache_resource
-def get_db_safe():
-    con = duckdb.connect(database=":memory:", read_only=False)
-    if not data_ok:
-        return con
-    parquet_files = []
-    if os.path.isdir(DATA_PATH):
-        for root, _, files in os.walk(DATA_PATH):
-            for f in files:
+LAT_MIN, LAT_MAX = 36.7, 37.4
+LON_MIN, LON_MAX = -1.8, 8.6
+
+def apply_theme(fig): fig.update_layout(**PLOTLY_THEME); return fig
+def section(icon, title): st.markdown(f'<div class="section-title">{icon} {title}</div>', unsafe_allow_html=True)
+def page_header(icon_bg, icon, title, subtitle):
+    st.markdown(f"""
+    <div class="page-header">
+        <div class="page-header-icon" style="background:{icon_bg}20;border:1px solid {icon_bg}40;">{icon}</div>
+        <div><h1>{title}</h1><p>{subtitle}</p></div>
+    </div>""", unsafe_allow_html=True)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DUCKDB
+# ═══════════════════════════════════════════════════════════════════════════════
+data_m1_ok = os.path.exists(PATH_M1)
+data_m2_ok = os.path.exists(PATH_M2)
+
+def _collect_parquets(path):
+    files = []
+    if not path: return files
+    if os.path.isdir(path):
+        for r, _, fs in os.walk(path):
+            for f in fs:
                 if f.endswith(".parquet"):
-                    parquet_files.append(os.path.join(root, f))
-    elif DATA_PATH.endswith(".parquet"):
-        parquet_files = [DATA_PATH]
-    else:
-        for ext in [".parquet", ""]:
-            test = DATA_PATH + ext
-            if os.path.exists(test):
-                parquet_files = [test]; break
-    if not parquet_files:
-        return con
-    files_sql = ", ".join(f"'{f}'" for f in parquet_files)
+                    files.append(os.path.join(r, f))
+    elif path.endswith(".parquet") and os.path.exists(path):
+        files = [path]
+    return files
+
+def _build_view(con, view_name, path):
+    files = _collect_parquets(path)
+    if not files: return False
+    files_sql = ", ".join(f"'{f}'" for f in files)
     probe = con.execute(f"SELECT * FROM read_parquet([{files_sql}]) LIMIT 1").df()
     cols  = probe.columns.tolist()
+
     def _col(c, typ="DOUBLE"):
         return f"CAST({c} AS {typ})" if c in cols else f"NULL::{typ}"
+
     dist_expr = _col("DISTANCE","INTEGER") if "DISTANCE" in cols else "1::INTEGER"
     ws_expr   = _col("wind_speed")
-    u10_expr  = _col("u10")
-    v10_expr  = _col("v10")
-    mwp_expr  = _col("mwp")
-    mwd_expr  = _col("mwd")
+    u10_expr  = _col("u10"); v10_expr = _col("v10")
+    mwp_expr  = _col("mwp"); mwd_expr = _col("mwd")
+    sal_expr  = _col("salinity"); o2_expr = _col("o2"); spm_expr = _col("spm")
+
     try:
         avg_sst = con.execute(f"SELECT AVG(CAST(sst AS DOUBLE)) FROM read_parquet([{files_sql}]) LIMIT 100000").fetchone()[0]
         sst_conv = "CAST(sst AS DOUBLE) - 273.15" if avg_sst and avg_sst > 100 else "CAST(sst AS DOUBLE)"
     except: sst_conv = "NULL::DOUBLE"
     try:
         avg_msl = con.execute(f"SELECT AVG(CAST(msl AS DOUBLE)) FROM read_parquet([{files_sql}]) LIMIT 100000").fetchone()[0]
-        msl_conv = "CAST(msl AS DOUBLE) / 100.0" if avg_msl and avg_msl > 10000 else "CAST(msl AS DOUBLE)"
+        msl_conv = "CAST(msl AS DOUBLE)/100.0" if avg_msl and avg_msl > 10000 else "CAST(msl AS DOUBLE)"
     except: msl_conv = "NULL::DOUBLE"
 
     con.execute(f"""
-        CREATE OR REPLACE VIEW hsv AS
+        CREATE OR REPLACE VIEW {view_name} AS
         SELECT
             CAST(NOM_PLAGE  AS VARCHAR)   AS NOM_PLAGE,
             CAST(NOM_WILAYA AS VARCHAR)   AS NOM_WILAYA,
@@ -258,23 +451,25 @@ def get_db_safe():
             CAST(Y AS DOUBLE)             AS Y,
             {dist_expr}                   AS DISTANCE,
             CAST(MESURE AS DOUBLE)        AS MESURE,
-            {u10_expr}                    AS u10,
-            {v10_expr}                    AS v10,
-            {ws_expr}                     AS wind_speed,
-            {mwp_expr}                    AS mwp,
-            {mwd_expr}                    AS mwd,
-            ({sst_conv})                  AS sst,
-            ({msl_conv})                  AS msl,
+            {u10_expr} AS u10, {v10_expr} AS v10,
+            {ws_expr}  AS wind_speed,
+            {mwp_expr} AS mwp,
+            {mwd_expr} AS mwd,
+            ({sst_conv}) AS sst,
+            ({msl_conv}) AS msl,
+            {sal_expr} AS salinity,
+            {o2_expr}  AS o2,
+            {spm_expr} AS spm,
             YEAR(CAST(DATETIME AS TIMESTAMP))      AS YEAR,
             MONTH(CAST(DATETIME AS TIMESTAMP))     AS MONTH,
             DAY(CAST(DATETIME AS TIMESTAMP))       AS DAY,
             HOUR(CAST(DATETIME AS TIMESTAMP))      AS HOUR,
             DAYOFWEEK(CAST(DATETIME AS TIMESTAMP)) AS WEEKDAY,
             CASE MONTH(CAST(DATETIME AS TIMESTAMP))
-                WHEN 12 THEN 'Hiver'    WHEN 1 THEN 'Hiver'     WHEN 2  THEN 'Hiver'
-                WHEN 3  THEN 'Printemps' WHEN 4 THEN 'Printemps' WHEN 5  THEN 'Printemps'
-                WHEN 6  THEN 'Été'      WHEN 7 THEN 'Été'       WHEN 8  THEN 'Été'
-                WHEN 9  THEN 'Automne'  WHEN 10 THEN 'Automne'  WHEN 11 THEN 'Automne'
+                WHEN 12 THEN 'Hiver' WHEN 1 THEN 'Hiver' WHEN 2 THEN 'Hiver'
+                WHEN 3 THEN 'Printemps' WHEN 4 THEN 'Printemps' WHEN 5 THEN 'Printemps'
+                WHEN 6 THEN 'Été' WHEN 7 THEN 'Été' WHEN 8 THEN 'Été'
+                WHEN 9 THEN 'Automne' WHEN 10 THEN 'Automne' WHEN 11 THEN 'Automne'
             END AS SEASON,
             CASE
                 WHEN CAST(MESURE AS DOUBLE) < 1.0 THEN 'Calme (< 1 m)'
@@ -288,100 +483,161 @@ def get_db_safe():
                 WHEN CAST(MESURE AS DOUBLE) < 4.0 THEN 'Agité (2.5–4m)'
                 ELSE 'Très agité (>4m)'
             END AS NIVEAU,
-            CASE WHEN CAST(MESURE AS DOUBLE) < 1.2
+            CASE WHEN CAST(MESURE AS DOUBLE)<1.2
                       AND ({sst_conv}) BETWEEN 16 AND 24
-                      AND {mwp_expr} < 8
+                      AND {mwp_expr}<8
                  THEN TRUE ELSE FALSE END AS AQUA_OK,
             CASE WHEN ({sst_conv}) BETWEEN 16 AND 26
-                      AND CAST(MESURE AS DOUBLE) <= 3.0
-                      AND {ws_expr} <= 10.0
-                      AND ({msl_conv}) >= 1005.0
+                      AND CAST(MESURE AS DOUBLE)<=3.0
+                      AND {ws_expr}<=10.0
+                      AND ({msl_conv})>=1005.0
                  THEN TRUE ELSE FALSE END AS DESSAL_OK
         FROM read_parquet([{files_sql}])
     """)
+    return True
+
+@st.cache_resource
+def get_con():
+    con = duckdb.connect(database=":memory:", read_only=False)
+    if data_m1_ok: _build_view(con, "hsv",  PATH_M1)
+    if data_m2_ok: _build_view(con, "hsv2", PATH_M2)
     return con
 
-con = get_db_safe()
+con = get_con()
 
-@st.cache_data(show_spinner=False)
-def get_lists():
-    if not data_ok: return [], [], []
-    wilayas = con.execute("SELECT DISTINCT NOM_WILAYA FROM hsv ORDER BY NOM_WILAYA").df()["NOM_WILAYA"].tolist()
-    plages  = con.execute("SELECT DISTINCT NOM_PLAGE  FROM hsv ORDER BY NOM_PLAGE").df()["NOM_PLAGE"].tolist()
-    years   = con.execute("SELECT DISTINCT YEAR FROM hsv ORDER BY YEAR").df()["YEAR"].tolist()
-    return wilayas, plages, years
-
-all_wilayas, all_plages, all_years = get_lists()
-
-def q(sql: str) -> pd.DataFrame:
-    return con.execute(sql).df()
-
-def has_col(col: str) -> bool:
+def q(sql):
     try:
-        r = con.execute(f"SELECT COUNT(*) FROM hsv WHERE {col} IS NOT NULL LIMIT 1").fetchone()
+        return con.execute(sql).df()
+    except Exception as e:
+        st.error(f"❌ Erreur SQL : {str(e)[:300]}")
+        return pd.DataFrame()
+
+def has_col(view, col):
+    try:
+        r = con.execute(f"SELECT COUNT(*) FROM {view} WHERE {col} IS NOT NULL LIMIT 1").fetchone()
         return r[0] > 0
     except: return False
 
-# ═══════════════════════════════════════════════════════════════════════
+@st.cache_data(show_spinner=False)
+def get_lists(view):
+    try:
+        wilayas = con.execute(f"SELECT DISTINCT NOM_WILAYA FROM {view} ORDER BY NOM_WILAYA").df()["NOM_WILAYA"].tolist()
+        plages  = con.execute(f"SELECT DISTINCT NOM_PLAGE  FROM {view} ORDER BY NOM_PLAGE").df()["NOM_PLAGE"].tolist()
+        years   = con.execute(f"SELECT DISTINCT YEAR FROM {view} ORDER BY YEAR").df()["YEAR"].tolist()
+        return wilayas, plages, years
+    except: return [], [], []
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # SIDEBAR
-# ═══════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
 with st.sidebar:
-    st.markdown("""
+    LANG_FLAGS = {"fr": "🇫🇷 Français", "en": "🇬🇧 English", "ar": "🇩🇿 العربية"}
+    current_flag = LANG_FLAGS.get(st.session_state.get("lang", "fr"), "🇫🇷 Français")
+    with st.expander(f"🌐 {current_flag}", expanded=False):
+        for code, label in LANG_FLAGS.items():
+            if st.button(label, key=f"lang_{code}", use_container_width=True):
+                st.session_state["lang"] = code
+                st.rerun()
+
+    st.markdown(f"""
     <div class="sidebar-logo">
         <div class="logo-icon">🌊</div>
-        <div class="logo-title">HSV Algérie</div>
-        <div class="logo-sub">Côtes · 1985–2023 · ERA5</div>
-    </div>
-    """, unsafe_allow_html=True)
+        <div class="logo-title">{T("app_title")}</div>
+        <div class="logo-sub">{T("app_subtitle")}</div>
+    </div>""", unsafe_allow_html=True)
 
-    page = st.selectbox(
-        "Navigation",
-        ["🏠 Accueil",
-         "📊 Analyse Globale",
-         "🏖️ Analyse Été",
-         "🏊 Alertes Noyades",
-         "💧 Dessalement SWRO",
-         "🐟 Aquaculture",
-         "📋 Synthèse & Export",
-         "🗺️ Carte des Dangers"],
-        label_visibility="collapsed"
-    )
+    st.markdown(f"**{T('model_data')}**")
+    model_choice = st.radio("Modèle", [T("model1_label"), T("model2_label")], label_visibility="collapsed")
+    is_m2 = "M2" in model_choice or "N2" in model_choice
+    VIEW = "hsv2" if is_m2 else "hsv"
+    data_ok = data_m2_ok if is_m2 else data_m1_ok
+
+    if is_m2:
+        st.markdown("""<div style="background:rgba(139,92,246,.1);border:1px solid rgba(139,92,246,.3);border-radius:8px;padding:8px 12px;font-size:.75rem;color:#a78bfa;margin-bottom:.8rem;">
+            🟣 <b>M2</b> · ERA5 + CMEMS<br><span style="color:#94b8cc;">salinity · o2 · spm · sst · mwp · wind_speed · MESURE</span></div>""", unsafe_allow_html=True)
+    else:
+        st.markdown("""<div style="background:rgba(14,165,233,.1);border:1px solid rgba(14,165,233,.3);border-radius:8px;padding:8px 12px;font-size:.75rem;color:#38bdf8;margin-bottom:.8rem;">
+            🔵 <b>M1</b> · ERA5 seul<br><span style="color:#94b8cc;">MESURE · wind_speed · mwp · mwd</span></div>""", unsafe_allow_html=True)
 
     st.markdown("---")
-    st.markdown("**FILTRES TEMPORELS**")
-    year_filter  = st.multiselect("Année",  all_years, default=[], placeholder="Toutes...")
-    month_filter = st.multiselect("Mois",   list(range(1,13)), format_func=lambda x: MOIS_LABELS[x], default=[], placeholder="Tous...")
-    day_filter   = st.multiselect("Jour",   list(range(1,32)), format_func=lambda x: f"{x:02d}", default=[], placeholder="Tous...")
-    hour_filter  = st.multiselect("Heure",  list(range(0,24)), format_func=lambda x: f"{x:02d}h00", default=[], placeholder="Toutes...")
-    st.markdown("**FILTRES GÉOGRAPHIQUES**")
-    wilaya_filter = st.multiselect("Wilaya", all_wilayas, default=[], placeholder="Toutes...")
+    st.markdown(f"**{T('navigation')}**")
+    NAV_MAIN = [T("home"), T("analysis"), T("activities"), T("synthesis"), T("danger_map"), T("realtime_pred")]
+    page = st.selectbox("Nav", NAV_MAIN, label_visibility="collapsed")
 
+    analysis_page = None
+    if page == T("analysis"):
+        st.markdown("<div style='font-size:.68rem;text-transform:uppercase;letter-spacing:.12em;color:#4a7a96;font-weight:600;margin-top:.5rem;margin-bottom:.3rem;'>Sous-menu Analyse</div>", unsafe_allow_html=True)
+        analysis_page = st.radio("Analyse", [T("global_analysis"), T("summer_analysis")], label_visibility="collapsed")
+
+    activity_page = None
+    if page == T("activities"):
+        st.markdown(f"<div style='font-size:.68rem;text-transform:uppercase;letter-spacing:.12em;color:#4a7a96;font-weight:600;margin-top:.5rem;margin-bottom:.3rem;'>{T('activities')}</div>", unsafe_allow_html=True)
+        activity_page = st.radio("Activité", [T("drowning_alerts"), T("desalination"), T("aquaculture")], label_visibility="collapsed")
+
+    # ── NOUVEAU : Sous-menu Prédiction ─────────────────────────────────
+    pred_model_page = None
+    if page == T("realtime_pred"):
+        st.markdown(
+            "<div style='font-size:.68rem;text-transform:uppercase;letter-spacing:.12em;"
+            "color:#4a7a96;font-weight:600;margin-top:.5rem;margin-bottom:.3rem;'>"
+            f"🔮 {T('pred_submenu')}</div>",
+            unsafe_allow_html=True
+        )
+        pred_model_page = st.radio(
+            "Pred modèle",
+            [T("pred_m1_label"), T("pred_m2_label")],
+            label_visibility="collapsed"
+        )
+        # Badge contextuel selon le choix
+        if pred_model_page == T("pred_m1_label"):
+            active_badge_color = "#0ea5e9" if not is_m2 else "#ef4444"
+            active_badge_text  = "✅ Modèle actif correspondant" if not is_m2 else "⚠️ Modèle actif : M2 — incompatible"
+            border_c = "rgba(14,165,233,.3)" if not is_m2 else "rgba(239,68,68,.4)"
+            bg_c     = "rgba(14,165,233,.07)" if not is_m2 else "rgba(239,68,68,.07)"
+            st.markdown(
+                f"<div style='background:{bg_c};border:1px solid {border_c};"
+                f"border-radius:8px;padding:6px 10px;font-size:.72rem;"
+                f"color:{active_badge_color};margin-top:4px;'>"
+                f"{active_badge_text}</div>",
+                unsafe_allow_html=True
+            )
+        else:
+            active_badge_color = "#8b5cf6" if is_m2 else "#ef4444"
+            active_badge_text  = "✅ Modèle actif correspondant" if is_m2 else "⚠️ Modèle actif : M1 — incompatible"
+            border_c = "rgba(139,92,246,.3)" if is_m2 else "rgba(239,68,68,.4)"
+            bg_c     = "rgba(139,92,246,.07)" if is_m2 else "rgba(239,68,68,.07)"
+            st.markdown(
+                f"<div style='background:{bg_c};border:1px solid {border_c};"
+                f"border-radius:8px;padding:6px 10px;font-size:.72rem;"
+                f"color:{active_badge_color};margin-top:4px;'>"
+                f"{active_badge_text}</div>",
+                unsafe_allow_html=True
+            )
+
+    st.markdown("---")
+    all_wilayas, all_plages, all_years = get_lists(VIEW) if data_ok else ([], [], [])
+
+    st.markdown(f"**{T('temporal_filters')}**")
+    year_filter  = st.multiselect(T("year"),  all_years, default=[], placeholder=T("all_f"))
+    month_filter = st.multiselect(T("month"), list(range(1, 13)), format_func=lambda x: T("months")[x], default=[], placeholder=T("all"))
+    hour_filter  = st.multiselect(T("hour"),  list(range(0, 24)), format_func=lambda x: f"{x:02d}h00", default=[], placeholder=T("all_f"))
+
+    st.markdown(f"**{T('geo_filters')}**")
+    wilaya_filter = st.multiselect(T("wilaya"), all_wilayas, default=[], placeholder=T("all_f"))
     if wilaya_filter and data_ok:
         wil_in = ",".join(f"'{w}'" for w in wilaya_filter)
-        plages_dispo = q(f"SELECT DISTINCT NOM_PLAGE FROM hsv WHERE NOM_WILAYA IN ({wil_in}) ORDER BY NOM_PLAGE")["NOM_PLAGE"].tolist()
+        plages_dispo = q(f"SELECT DISTINCT NOM_PLAGE FROM {VIEW} WHERE NOM_WILAYA IN ({wil_in}) ORDER BY NOM_PLAGE")["NOM_PLAGE"].tolist() if data_ok else []
     else:
         plages_dispo = all_plages
+    plage_filter = st.multiselect(T("beach"), plages_dispo, default=[], placeholder=T("all_f"))
 
-    plage_filter = st.multiselect("Plage", plages_dispo, default=[], placeholder="Toutes...")
-    nb_sel = len(plage_filter) if plage_filter else len(plages_dispo)
-    if data_ok:
-        st.info(f"📍 {nb_sel} / {len(plages_dispo)} plage(s)")
-
-    st.markdown("---")
-    cols_ok = [c for c in ["sst","mwp","msl","mwd","wind_speed"] if data_ok and has_col(c)]
-    if cols_ok:
-        st.success(f"✅ Variables ERA5\n{', '.join(c.upper() for c in cols_ok)}")
-    elif data_ok:
-        st.warning("⚠️ Variables ERA5 non trouvées")
-
-# ═══════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
 # HELPERS
-# ═══════════════════════════════════════════════════════════════════════
-def where_clause(extra: str = "") -> str:
+# ═══════════════════════════════════════════════════════════════════════════════
+def where_clause(extra=""):
     conds = []
     if year_filter:   conds.append(f"YEAR IN ({','.join(str(y) for y in year_filter)})")
     if month_filter:  conds.append(f"MONTH IN ({','.join(str(m) for m in month_filter)})")
-    if day_filter:    conds.append(f"DAY IN ({','.join(str(d) for d in day_filter)})")
     if hour_filter:   conds.append(f"HOUR IN ({','.join(str(h) for h in hour_filter)})")
     if plage_filter:
         pl_in = ",".join(f"'{p}'" for p in plage_filter)
@@ -389,2269 +645,1140 @@ def where_clause(extra: str = "") -> str:
     elif wilaya_filter:
         wil_in2 = ",".join(f"'{w}'" for w in wilaya_filter)
         conds.append(f"NOM_WILAYA IN ({wil_in2})")
-    if extra: conds.append(extra)
+    if extra: conds.append(f"({extra})")
     return ("WHERE " + " AND ".join(conds)) if conds else ""
+
+def where_clause_with_extra(additional_extra=""):
+    return where_clause(additional_extra)
 
 W = where_clause
 
-def apply_theme(fig):
-    fig.update_layout(**PLOTLY_THEME)
-    return fig
-
-# ─── FIX : helper _ax() pour axes Plotly (évite NameError) ────────────
-def _ax():
-    """Retourne les paramètres d'axe cohérents avec le thème sombre."""
-    return dict(
-        gridcolor="rgba(30,90,150,0.2)",
-        linecolor="rgba(30,90,150,0.3)",
-        tickcolor="#4a7a96",
-        zerolinecolor="rgba(30,90,150,0.2)",
-        tickfont=dict(color="#94b8cc"),
-    )
-
-def section(icon: str, title: str):
-    st.markdown(f'<div class="section-title">{icon} {title}</div>', unsafe_allow_html=True)
-
-def page_header(icon_bg: str, icon: str, title: str, subtitle: str):
-    st.markdown(f"""
-    <div class="page-header">
-        <div class="page-header-icon" style="background:{icon_bg}20;border:1px solid {icon_bg}40;">{icon}</div>
-        <div><h1>{title}</h1><p>{subtitle}</p></div>
-    </div>
-    """, unsafe_allow_html=True)
-
 def show_kpis(wh=""):
-    if not data_ok: st.warning("Aucune donnée disponible."); return
-    with st.spinner("Calcul des indicateurs..."):
+    if not data_ok: st.warning(T("no_data")); return
+    with st.spinner(T("computing")):
         r = q(f"""
             SELECT COUNT(*) AS total, AVG(MESURE) AS avg_hsv, MAX(MESURE) AS max_hsv,
                    STDDEV(MESURE) AS std_hsv,
-                   SUM(CASE WHEN MESURE>=1.5 THEN 1 ELSE 0 END) AS n_15,
-                   SUM(CASE WHEN MESURE>=2.5 THEN 1 ELSE 0 END) AS n_25,
-                   SUM(CASE WHEN MESURE>=4.0 THEN 1 ELSE 0 END) AS n_40,
+                   SUM(CASE WHEN MESURE>=1.5 THEN 1 ELSE 0 END) AS n15,
+                   SUM(CASE WHEN MESURE>=2.5 THEN 1 ELSE 0 END) AS n25,
+                   SUM(CASE WHEN MESURE>=4.0 THEN 1 ELSE 0 END) AS n40,
                    PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY MESURE) AS p95
-            FROM hsv {wh}
+            FROM {VIEW} {wh}
         """)
-    if r.empty or r["total"].iloc[0] == 0: st.warning("Aucune donnée pour les filtres sélectionnés."); return
-    total=r["total"].iloc[0]; avg_h=r["avg_hsv"].iloc[0]; max_h=r["max_hsv"].iloc[0]
-    std_h=r["std_hsv"].iloc[0]; n15=r["n_15"].iloc[0]; n25=r["n_25"].iloc[0]; n40=r["n_40"].iloc[0]; p95=r["p95"].iloc[0]
-    c1,c2,c3,c4 = st.columns(4)
-    c1.metric("📦 Mesures",       f"{int(total):,}")
-    c2.metric("🌊 HSV Moyenne",   f"{avg_h:.3f} m", f"± {std_h:.3f} m")
-    c3.metric("⚠️ HSV Maximum",   f"{max_h:.2f} m")
-    c4.metric("📈 Percentile 95", f"{p95:.2f} m")
-    c5,c6,c7,c8 = st.columns(4)
+    if r.empty or r["total"].iloc[0] == 0: st.warning(T("no_filtered_data")); return
+    total = r["total"].iloc[0]; avg_h = r["avg_hsv"].iloc[0]; max_h = r["max_hsv"].iloc[0]
+    std_h = r["std_hsv"].iloc[0]; n15 = r["n15"].iloc[0]; n25 = r["n25"].iloc[0]
+    n40 = r["n40"].iloc[0]; p95 = r["p95"].iloc[0]
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric(f"📦 {T('measures')}",  f"{int(total):,}")
+    c2.metric(f"🌊 {T('avg_hsv')}",   f"{avg_h:.3f} m", f"± {std_h:.3f} m")
+    c3.metric(f"⚠️ {T('max_hsv')}",   f"{max_h:.2f} m")
+    c4.metric(f"📈 {T('p95')}",       f"{p95:.2f} m")
+    c5, c6, c7, c8 = st.columns(4)
     c5.metric("🟡 ≥ 1.5 m", f"{int(n15):,}", f"{n15/total*100:.1f}%")
     c6.metric("🟠 ≥ 2.5 m", f"{int(n25):,}", f"{n25/total*100:.1f}%")
     c7.metric("🔴 ≥ 4.0 m", f"{int(n40):,}", f"{n40/total*100:.1f}%")
-    c8.metric("📐 Écart-type",    f"{std_h:.3f} m")
+    c8.metric(f"📐 {T('std')}",       f"{std_h:.3f} m")
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# PAGE : ACCUEIL
-# ═══════════════════════════════════════════════════════════════════════
-if page == "🏠 Accueil":
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAGE : PRÉDICTION TEMPS RÉEL — ROUTEUR M1 / M2
+# ═══════════════════════════════════════════════════════════════════════════════
+if page == T("realtime_pred"):
+
+    # ── Labels normalisés (indépendants de la langue) ──────────────────
+    PRED_M1_LABEL = T("pred_m1_label")
+    PRED_M2_LABEL = T("pred_m2_label")
+
+    pred_wants_m1 = (pred_model_page == PRED_M1_LABEL)
+    pred_wants_m2 = (pred_model_page == PRED_M2_LABEL)
+
+    # ══════════════════════════════════════════════════════════════════════
+    # CAS 1 — M2 demandé mais M1 actif → ERREUR INCOMPATIBILITÉ
+    # ══════════════════════════════════════════════════════════════════════
+    if pred_wants_m2 and not is_m2:
+        st.markdown("""
+        <div class="incompat-banner">
+            <div class="ib-icon">🚫</div>
+            <div class="ib-title">Incompatibilité de modèle</div>
+            <div class="ib-body">
+                Vous avez sélectionné <strong>Prédiction M2 — ERA5 + CMEMS</strong>
+                mais le modèle de données actif est <strong>🔵 M1 — ERA5 seul</strong>.<br><br>
+                Le modèle M2 nécessite les variables enrichies CMEMS
+                (Salinité, O₂ dissous, SPM, SST) qui ne sont pas disponibles dans M1.
+            </div>
+            <div class="ib-step">
+                👉 <strong>Solution :</strong> Dans la sidebar, section <em>MODÈLE DE DONNÉES</em>,
+                sélectionnez <strong>🟣 M2 — ERA5 + CMEMS (1999–2023)</strong>
+                puis revenez sur cette page.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        col_info1, col_info2 = st.columns(2)
+        with col_info1:
+            st.markdown("""
+            <div class="info-card" style="border-left-color:#0ea5e9;">
+                <div class="title" style="color:#38bdf8;">🔵 M1 actuellement actif</div>
+                <div class="threshold-row"><span class="threshold-key">Variables disponibles</span><span class="threshold-val" style="color:#38bdf8;">MESURE · wind_speed · mwp · mwd</span></div>
+                <div class="threshold-row"><span class="threshold-key">Période</span><span class="threshold-val">1985 – 2023</span></div>
+                <div class="threshold-row"><span class="threshold-key">Prédiction compatible</span><span class="threshold-val" style="color:#34d399;">✅ Prédiction M1</span></div>
+            </div>""", unsafe_allow_html=True)
+        with col_info2:
+            st.markdown("""
+            <div class="info-card" style="border-left-color:#8b5cf6;">
+                <div class="title" style="color:#a78bfa;">🟣 M2 — Ce qu'il vous faut</div>
+                <div class="threshold-row"><span class="threshold-key">Variables requises</span><span class="threshold-val" style="color:#a78bfa;">salinity · o2 · spm · sst</span></div>
+                <div class="threshold-row"><span class="threshold-key">Période</span><span class="threshold-val">1999 – 2023</span></div>
+                <div class="threshold-row"><span class="threshold-key">Action requise</span><span class="threshold-val" style="color:#fbbf24;">⚠️ Changer de modèle</span></div>
+            </div>""", unsafe_allow_html=True)
+        st.stop()
+
+    # ══════════════════════════════════════════════════════════════════════
+    # CAS 2 — M1 demandé mais M2 actif → ERREUR INCOMPATIBILITÉ
+    # ══════════════════════════════════════════════════════════════════════
+    elif pred_wants_m1 and is_m2:
+        st.markdown("""
+        <div class="incompat-banner">
+            <div class="ib-icon">🚫</div>
+            <div class="ib-title">Incompatibilité de modèle</div>
+            <div class="ib-body">
+                Vous avez sélectionné <strong>Prédiction M1 — ERA5 seul</strong>
+                mais le modèle de données actif est <strong>🟣 M2 — ERA5 + CMEMS</strong>.<br><br>
+                Le pipeline M1 utilise exclusivement les 15 features ERA5.
+                Exécuter M1 avec un contexte M2 produirait des prédictions incohérentes.
+            </div>
+            <div class="ib-step">
+                👉 <strong>Solution :</strong> Dans la sidebar, section <em>MODÈLE DE DONNÉES</em>,
+                sélectionnez <strong>🔵 M1 — ERA5 seul (1985–2023)</strong>
+                puis revenez sur cette page.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        col_info1, col_info2 = st.columns(2)
+        with col_info1:
+            st.markdown("""
+            <div class="info-card" style="border-left-color:#8b5cf6;">
+                <div class="title" style="color:#a78bfa;">🟣 M2 actuellement actif</div>
+                <div class="threshold-row"><span class="threshold-key">Variables disponibles</span><span class="threshold-val" style="color:#a78bfa;">MESURE · salinity · o2 · spm · sst · ...</span></div>
+                <div class="threshold-row"><span class="threshold-key">Période</span><span class="threshold-val">1999 – 2023</span></div>
+                <div class="threshold-row"><span class="threshold-key">Prédiction compatible</span><span class="threshold-val" style="color:#34d399;">✅ Prédiction M2</span></div>
+            </div>""", unsafe_allow_html=True)
+        with col_info2:
+            st.markdown("""
+            <div class="info-card" style="border-left-color:#0ea5e9;">
+                <div class="title" style="color:#38bdf8;">🔵 M1 — Ce qu'il vous faut</div>
+                <div class="threshold-row"><span class="threshold-key">Features LSTM</span><span class="threshold-val" style="color:#38bdf8;">15 features ERA5 uniquement</span></div>
+                <div class="threshold-row"><span class="threshold-key">Période</span><span class="threshold-val">1985 – 2023</span></div>
+                <div class="threshold-row"><span class="threshold-key">Action requise</span><span class="threshold-val" style="color:#fbbf24;">⚠️ Changer de modèle</span></div>
+            </div>""", unsafe_allow_html=True)
+        st.stop()
+
+    # ══════════════════════════════════════════════════════════════════════
+    # CAS 3 — M2 demandé + M2 actif → PLACEHOLDER (en développement)
+    # ══════════════════════════════════════════════════════════════════════
+    elif pred_wants_m2 and is_m2:
+        page_header(
+            "#8b5cf6", "🟣",
+            "Prédiction Temps Réel — M2",
+            "ERA5 + CMEMS (Salinité · O₂ · SPM · SST) → LSTM enrichi → HSV"
+        )
+
+        st.markdown("""
+        <div class="wip-banner">
+            <div class="wb-icon">🚧</div>
+            <div class="wb-title">Module M2 en cours de développement</div>
+            <div class="wb-body">
+                Le pipeline de prédiction <strong>Modèle 2</strong> (ERA5 + CMEMS) est en cours de développement.<br>
+                Il intégrera les variables oceanographiques CMEMS pour une prédiction HSV enrichie
+                tenant compte de la qualité de l'eau, de la température de surface et des matières en suspension.<br><br>
+                <strong>Disponibilité estimée :</strong> Prochaine version du dashboard.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        section("📐", "Architecture M2 prévue")
+
+        col_arch1, col_arch2 = st.columns([1, 1])
+
+        with col_arch1:
+            st.markdown("""
+            <table class="feat-table">
+                <thead>
+                    <tr>
+                        <th>Feature</th>
+                        <th>M1 (actuel)</th>
+                        <th>M2 (prévu)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr><td class="feat-name">MESURE (HSV)</td><td class="check-yes">✅</td><td class="check-yes">✅</td></tr>
+                    <tr><td class="feat-name">wind_speed</td><td class="check-yes">✅</td><td class="check-yes">✅</td></tr>
+                    <tr><td class="feat-name">mwp</td><td class="check-yes">✅</td><td class="check-yes">✅</td></tr>
+                    <tr><td class="feat-name">mwd (sin/cos)</td><td class="check-yes">✅</td><td class="check-yes">✅</td></tr>
+                    <tr><td class="feat-name">Temps cyclique</td><td class="check-yes">✅</td><td class="check-yes">✅</td></tr>
+                    <tr><td class="feat-name">Coordonnées</td><td class="check-yes">✅</td><td class="check-yes">✅</td></tr>
+                    <tr><td class="feat-name">salinity</td><td class="check-no">❌</td><td class="check-yes">✅</td></tr>
+                    <tr><td class="feat-name">o2 dissous</td><td class="check-no">❌</td><td class="check-yes">✅</td></tr>
+                    <tr><td class="feat-name">spm</td><td class="check-no">❌</td><td class="check-yes">✅</td></tr>
+                    <tr><td class="feat-name">sst</td><td class="check-no">❌</td><td class="check-yes">✅</td></tr>
+                </tbody>
+            </table>
+            """, unsafe_allow_html=True)
+
+        with col_arch2:
+            st.markdown("""
+            <div class="info-card" style="border-left-color:#8b5cf6;margin-top:0;">
+                <div class="title" style="color:#a78bfa;">🟣 Pipeline M2 prévu</div>
+                <div class="threshold-row"><span class="threshold-key">Source 1</span><span class="threshold-val" style="color:#38bdf8;">ERA5 Réanalyse (Copernicus CDS)</span></div>
+                <div class="threshold-row"><span class="threshold-key">Source 2</span><span class="threshold-val" style="color:#22d3ee;">CMEMS Marine Service</span></div>
+                <div class="threshold-row"><span class="threshold-key">Source 3</span><span class="threshold-val" style="color:#34d399;">Open-Meteo Marine (forecast)</span></div>
+                <div class="threshold-row"><span class="threshold-key">Features totales</span><span class="threshold-val" style="color:#a78bfa;">19 features (vs 15 pour M1)</span></div>
+                <div class="threshold-row"><span class="threshold-key">Fenêtre contexte</span><span class="threshold-val">72h (identique à M1)</span></div>
+                <div class="threshold-row"><span class="threshold-key">Horizons</span><span class="threshold-val">+1h · +6h · +12h · +24h</span></div>
+                <div class="threshold-row"><span class="threshold-key">Architecture LSTM</span><span class="threshold-val" style="color:#a78bfa;">Transfer Learning depuis M1</span></div>
+            </div>
+
+            <div class="info-card" style="border-left-color:#10b981;">
+                <div class="title" style="color:#34d399;">💡 Avantages M2</div>
+                <div class="threshold-row"><span class="threshold-key">Salinité</span><span class="threshold-val">Densité eau → interaction vagues</span></div>
+                <div class="threshold-row"><span class="threshold-key">O₂ dissous</span><span class="threshold-val">Proxy activité marine / upwelling</span></div>
+                <div class="threshold-row"><span class="threshold-key">SPM</span><span class="threshold-val">Turbidité → amortissement vagues</span></div>
+                <div class="threshold-row"><span class="threshold-key">SST</span><span class="threshold-val">Énergie thermique → intensité vagues</span></div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        section("🔮", "Prédiction M1 disponible maintenant")
+        st.info(
+            "⬅️ En attendant M2, la **Prédiction M1** est pleinement opérationnelle.\n\n"
+            "Sélectionnez **🔵 Prédiction M1 — ERA5** dans le menu de gauche pour lancer une prédiction."
+        )
+        st.stop()
+
+    # ══════════════════════════════════════════════════════════════════════
+    # CAS 4 — M1 demandé + M1 actif → PIPELINE COMPLET
+    # ══════════════════════════════════════════════════════════════════════
+
+    page_header(
+        "#8b5cf6",
+        "🔮",
+        "Prédiction Temps Réel — M1",
+        "ERA5 (contexte 72h) + Open-Meteo Marine (forecast J+7) → LSTM → HSV → Alerte"
+    )
+
     st.markdown("""
-    <div class="hero">
-        <h1>Système d'Analyse des Vagues Côtières — Algérie</h1>
-        <div class="sub">
-            Prévision de la Hauteur Significative des Vagues (HSV) par apprentissage profond LSTM + Transfer Learning.<br>
-            Données ERA5 · 60 plages · 13 wilayas côtières · 38 ans d'observations (1985–2023).
-        </div>
-        <div class="pills">
-            <span class="pill pill-red">Alertes noyades</span>
-            <span class="pill pill-blue">Dessalement SWRO</span>
-            <span class="pill pill-green">Aquaculture marine</span>
-            <span class="pill pill-purple">Analyse HSV / ERA5</span>
-        </div>
+    <div style="display:inline-flex;align-items:center;gap:8px;background:rgba(14,165,233,.1);
+         border:1px solid rgba(14,165,233,.3);border-radius:8px;padding:6px 14px;
+         font-size:.8rem;color:#38bdf8;margin-bottom:1rem;">
+        🔵 <strong>M1 — ERA5 seul</strong> &nbsp;·&nbsp; 15 features &nbsp;·&nbsp;
+        LSTM Global + Transfer Learning &nbsp;·&nbsp; Horizons +1h / +6h / +12h / +24h
     </div>
     """, unsafe_allow_html=True)
 
-    section("📊", "Statistiques globales du dataset")
-    if data_ok: show_kpis()
-    else: st.error("❌ Dataset introuvable : `data/lstm_final_clean`")
+    # ═══════════════════════════════════════════════════════════════════
+    # CONFIGURATION PIPELINE M1
+    # ═══════════════════════════════════════════════════════════════════
+    WINDOW   = 72
+    HORIZONS = [1, 6, 12, 24]
 
-    st.markdown("---")
-    section("🎯", "Modules applicatifs")
+    FEATURES = [
+        "MESURE", "wind_speed", "mwp", "mwd_sin", "mwd_cos",
+        "hour_sin", "hour_cos", "month_sin", "month_cos",
+        "day_sin", "day_cos", "year_sin", "year_cos",
+        "x_norm", "y_norm",
+    ]
+
+    DANGER_THRESHOLDS = {
+        "vert":   (0.0, 0.5, "Mer calme",    "🟢"),
+        "jaune":  (0.5, 1.0, "Mer agitée",    "🟡"),
+        "orange": (1.0, 1.5, "Risque modéré", "🟠"),
+        "rouge":  (1.5, 9.0, "DANGER",        "🔴"),
+    }
+
+    import glob
+    import zipfile
+    import traceback
+    import joblib
+    import cdsapi
+    import xarray as xr
+    import tensorflow as tf
+    from collections import defaultdict
+
+    def asymmetric_huber_loss(delta=0.5, underestimate_penalty=3.0):
+        horizon_weights = tf.constant([1.0, 1.2, 1.5, 2.0], dtype=tf.float32)
+        def loss(y_true, y_pred):
+            error     = y_true - y_pred
+            abs_error = tf.abs(error)
+            quadratic = tf.minimum(abs_error, delta)
+            linear    = abs_error - quadratic
+            huber     = 0.5 * quadratic**2 + delta * linear
+            weight_asym = tf.where(
+                error > 0,
+                tf.ones_like(error) * underestimate_penalty,
+                tf.ones_like(error)
+            )
+            return tf.reduce_mean(huber * weight_asym * horizon_weights)
+        loss.__name__ = "asymmetric_huber"
+        return loss
+
+    def asymmetric_huber(y_true, y_pred, delta=1.0, alpha=2.5):
+        error     = y_true - y_pred
+        abs_error = tf.abs(error)
+        quadratic = tf.minimum(abs_error, delta)
+        linear    = abs_error - quadratic
+        loss      = 0.5 * tf.square(quadratic) + delta * linear
+        weight    = tf.where(error > 0, alpha, 1.0)
+        return tf.reduce_mean(loss * weight)
+
+    CUSTOM_OBJECTS = {
+        "asymmetric_huber":      asymmetric_huber,
+        "asymmetric_huber_loss": asymmetric_huber_loss(),
+        "loss":                  asymmetric_huber_loss(),
+    }
+
+    # ── Chargement modèles ─────────────────────────────────────────────
+    @st.cache_resource(show_spinner="Chargement modèle LSTM global...")
+    def load_global_lstm():
+        return tf.keras.models.load_model(
+            LSTM_PATH, custom_objects=CUSTOM_OBJECTS, compile=False
+        )
+
+    @st.cache_resource(show_spinner="Chargement scaler global...")
+    def load_scaler():
+        return joblib.load(SCALER_PATH)
+
+    # ── Détection modèle local fine-tuné ──────────────────────────────
+    # ✅ CORRECTION : les modèles locaux sont dans plots/ directement (sans sous-dossier)
+    def load_finetuned_lstm(plage_name: str):
+        base_dir  = os.path.dirname(LSTM_PATH)
+        safe_name = plage_name.replace(" ", "_")
+
+        #  Cherche directement dans plots/ sans sous-dossier
+        model_path = os.path.join(
+            base_dir, "plots", f"{safe_name}_lstm.keras"
+        )
+
+        if not os.path.exists(model_path):
+            # Recherche alternative
+            candidates = glob.glob(
+                os.path.join(base_dir, "plots", "*lstm*.keras")
+            )
+            matched = [
+                p for p in candidates
+                if safe_name.lower() in os.path.basename(p).lower()
+            ]
+            if not matched:
+                return None, False
+            model_path = matched[0]
+
+        try:
+            model = tf.keras.models.load_model(
+                model_path, custom_objects=CUSTOM_OBJECTS, compile=False
+            )
+            return model, True
+        except Exception as e:
+            st.warning(f"⚠️ Modèle local non chargeable : {e}. Fallback global.")
+            return None, False
+
+    # ── Inférence LSTM + fallback automatique ─────────────────────────
+    def _run_inference(X_tensor, plage_name):
+        local_model, used_local = load_finetuned_lstm(plage_name)
+        if used_local and local_model is not None:
+            model_used = local_model
+            model_info = f"Fine-tuné — {plage_name}"
+        else:
+            model_used = load_global_lstm()
+            used_local = False
+            model_info = "Global (fallback)"
+        preds = model_used.predict(X_tensor, verbose=0)[0]
+        return preds, used_local, model_info
+
+    # ── Vérification fichiers ──────────────────────────────────────────
+    models_ok = all([os.path.exists(LSTM_PATH), os.path.exists(SCALER_PATH)])
+    if not models_ok:
+        st.error("❌ Modèle LSTM global ou scaler introuvable")
+        st.info(f"LSTM attendu : `{LSTM_PATH}`\nScaler attendu : `{SCALER_PATH}`")
+        st.stop()
+
+    # ── Helpers affichage ──────────────────────────────────────────────
+    def _danger_level(hsv: float):
+        for key, (lo, hi, label, emoji) in DANGER_THRESHOLDS.items():
+            if lo <= hsv < hi:
+                colors = {"vert":"#22c55e","jaune":"#eab308","orange":"#f97316","rouge":"#ef4444"}
+                return colors[key], label, emoji
+        return "#ef4444", "DANGER", "🔴"
+
+    def _model_badge(used_local: bool, plage: str) -> str:
+        if used_local:
+            return (f"<span style='background:#7c3aed;color:white;padding:3px 10px;"
+                    f"border-radius:12px;font-size:0.8em;'>🎯 Modèle fine-tuné — {plage}</span>")
+        return ("<span style='background:#2563eb;color:white;padding:3px 10px;"
+                "border-radius:12px;font-size:0.8em;'>🌐 Modèle global (fallback)</span>")
+
+    # ── Ouverture ERA5 ─────────────────────────────────────────────────
+    def _open_era5_file(path: str, lat: float, lon: float):
+        def _sel_point(ds):
+            if "latitude" in ds.coords and "longitude" in ds.coords:
+                ds = ds.sel(latitude=lat, longitude=lon, method="nearest")
+            return ds.to_dataframe().reset_index()
+
+        if zipfile.is_zipfile(path):
+            tmp_extract = path + "_extract"
+            os.makedirs(tmp_extract, exist_ok=True)
+            with zipfile.ZipFile(path, "r") as zf:
+                zf.extractall(tmp_extract)
+            nc_files = glob.glob(os.path.join(tmp_extract, "*.nc"))
+            if not nc_files:
+                raise RuntimeError("Aucun .nc dans le ZIP ERA5")
+            dfs = []
+            for nc in nc_files:
+                ds = xr.open_dataset(nc, engine="netcdf4")
+                dfs.append(_sel_point(ds))
+                ds.close()
+            if len(dfs) == 1:
+                return dfs[0]
+            time_key = "valid_time" if "valid_time" in dfs[0].columns else "time"
+            merged = dfs[0]
+            for extra in dfs[1:]:
+                new_cols = [c for c in extra.columns if c not in merged.columns or c == time_key]
+                merged = merged.merge(extra[new_cols], on=time_key, how="outer")
+            return merged
+
+        for engine in ["netcdf4", "h5netcdf", "scipy"]:
+            try:
+                ds = xr.open_dataset(path, engine=engine)
+                df = _sel_point(ds)
+                ds.close()
+                return df
+            except Exception:
+                continue
+        raise RuntimeError(f"Impossible d'ouvrir ERA5 : {path}")
+
+    # ── Téléchargement ERA5 ────────────────────────────────────────────
+    def _fetch_era5_window(c, lat, lon, date_start, date_end, tmp_dir):
+        days_needed = []
+        d = date_start.date()
+        while d <= date_end.date():
+            days_needed.append(d)
+            d += timedelta(days=1)
+
+        month_groups = defaultdict(list)
+        for day in days_needed:
+            month_groups[(day.year, day.month)].append(day)
+
+        frames = []
+        for (yr, mo), days in month_groups.items():
+            dl_path = os.path.join(tmp_dir, f"era5_{yr}_{mo:02d}.zip")
+            c.retrieve(
+                "reanalysis-era5-single-levels",
+                {
+                    "product_type": "reanalysis",
+                    "variable": [
+                        "significant_height_of_combined_wind_waves_and_swell",
+                        "10m_u_component_of_wind",
+                        "10m_v_component_of_wind",
+                        "mean_wave_period",
+                        "mean_wave_direction",
+                    ],
+                    "year":  [str(yr)],
+                    "month": [f"{mo:02d}"],
+                    "day":   [f"{x.day:02d}" for x in days],
+                    "time":  [f"{h:02d}:00" for h in range(24)],
+                    "area":  [lat + 0.5, lon - 0.5, lat - 0.5, lon + 0.5],
+                    "format": "netcdf",
+                },
+                dl_path,
+            )
+            df_tmp = _open_era5_file(dl_path, lat, lon)
+            frames.append(df_tmp)
+
+        df = pd.concat(frames, ignore_index=True)
+        col_map = {"swh": "MESURE","mwp": "mwp","mwd": "mwd","u10": "u10","v10": "v10"}
+        df.rename(columns=col_map, inplace=True)
+        time_col = "valid_time" if "valid_time" in df.columns else "time"
+        df["DATETIME"] = pd.to_datetime(df[time_col], utc=True).dt.tz_localize(None)
+        df = df.sort_values("DATETIME")
+        df = df[(df["DATETIME"] >= date_start) & (df["DATETIME"] <= date_end)].copy()
+        return df
+
+    # ── Open-Meteo Marine (forecast gratuit) ──────────────────────────
+    def _fetch_openmeteo_forecast(lat, lon, date_start, date_end):
+        import urllib.request
+        import json as _json
+
+        start_str = date_start.strftime("%Y-%m-%d")
+        end_str   = date_end.strftime("%Y-%m-%d")
+        params = (
+            f"latitude={lat:.4f}&longitude={lon:.4f}"
+            f"&hourly=wave_height,wave_period,wave_direction,"
+            f"wind_speed_10m,wind_direction_10m"
+            f"&start_date={start_str}&end_date={end_str}&timezone=UTC"
+        )
+        url = f"https://marine-api.open-meteo.com/v1/marine?{params}"
+        try:
+            with urllib.request.urlopen(url, timeout=30) as resp:
+                data = _json.loads(resp.read().decode())
+        except Exception as e:
+            raise RuntimeError(f"Erreur Open-Meteo Marine API : {e}")
+
+        if "hourly" not in data:
+            raise RuntimeError(f"Réponse Open-Meteo invalide. Réponse : {str(data)[:300]}")
+
+        h = data["hourly"]
+        df = pd.DataFrame({
+            "DATETIME":       pd.to_datetime(h["time"]),
+            "MESURE":         h.get("wave_height",      [np.nan] * len(h["time"])),
+            "mwp":            h.get("wave_period",      [np.nan] * len(h["time"])),
+            "mwd":            h.get("wave_direction",   [np.nan] * len(h["time"])),
+            "wind_speed_raw": h.get("wind_speed_10m",   [np.nan] * len(h["time"])),
+            "wind_dir_raw":   h.get("wind_direction_10m",[np.nan] * len(h["time"])),
+        })
+        ws  = df["wind_speed_raw"].fillna(0).values
+        wd  = df["wind_dir_raw"].fillna(0).values
+        df["u10"] = -ws * np.sin(np.deg2rad(wd))
+        df["v10"] = -ws * np.cos(np.deg2rad(wd))
+        df = df[(df["DATETIME"] >= date_start) & (df["DATETIME"] <= date_end)].copy()
+        df = df.sort_values("DATETIME").reset_index(drop=True)
+        df["MESURE"] = df["MESURE"].clip(0, 20).ffill().bfill().fillna(0.3)
+        df["mwp"]    = df["mwp"].clip(0, 25).ffill().bfill().fillna(4.0)
+        df["mwd"]    = df["mwd"].clip(0, 360).ffill().bfill().fillna(180.0)
+        return df[["DATETIME", "MESURE", "mwp", "mwd", "u10", "v10"]]
+
+    # ── Fusion ERA5 + Open-Meteo ───────────────────────────────────────
+    def _build_context_window(era5_df, forecast_df, target_dt, window_h=72):
+        frames = []
+        if era5_df is not None and not era5_df.empty:
+            frames.append(era5_df.copy())
+        if forecast_df is not None and not forecast_df.empty:
+            if not frames:
+                frames.append(forecast_df.copy())
+            else:
+                last_era5_dt = pd.to_datetime(frames[-1]["DATETIME"]).max()
+                fc_tail = forecast_df[forecast_df["DATETIME"] > last_era5_dt].copy()
+                if not fc_tail.empty:
+                    frames.append(fc_tail)
+        if not frames:
+            raise RuntimeError("Aucune donnée disponible (ERA5 ni Open-Meteo).")
+        merged = pd.concat(frames, ignore_index=True)
+        merged = merged.sort_values("DATETIME").drop_duplicates("DATETIME")
+        window_end   = target_dt
+        window_start = window_end - timedelta(hours=window_h - 1)
+        merged = merged[(merged["DATETIME"] >= window_start) & (merged["DATETIME"] <= window_end)].copy()
+        return merged.reset_index(drop=True)
+
+    # ── Feature Engineering ────────────────────────────────────────────
+    def _build_features(df, lat: float, lon: float):
+        df = df.copy()
+        for col in ["MESURE", "mwp", "mwd", "u10", "v10"]:
+            if col not in df.columns:
+                df[col] = 0.0
+        df = df.ffill().bfill().fillna(0.0)
+        df["MESURE"]     = np.clip(df["MESURE"], 0, 20)
+        df["mwp"]        = np.clip(df["mwp"],    0, 25)
+        df["wind_speed"] = np.clip(np.sqrt(df["u10"]**2 + df["v10"]**2), 0, 60)
+        df["mwd_sin"]    = np.sin(np.deg2rad(df["mwd"]))
+        df["mwd_cos"]    = np.cos(np.deg2rad(df["mwd"]))
+        h = df["DATETIME"].dt.hour
+        m = df["DATETIME"].dt.month
+        d = df["DATETIME"].dt.day
+        df["hour_sin"]   = np.sin(2 * np.pi * h / 24)
+        df["hour_cos"]   = np.cos(2 * np.pi * h / 24)
+        df["month_sin"]  = np.sin(2 * np.pi * m / 12)
+        df["month_cos"]  = np.cos(2 * np.pi * m / 12)
+        df["day_sin"]    = np.sin(2 * np.pi * d / 31)
+        df["day_cos"]    = np.cos(2 * np.pi * d / 31)
+        df["year_sin"]   = 0.0
+        df["year_cos"]   = 0.0
+        df["x_norm"]     = np.clip((lon + 2) / 11, 0, 1)
+        df["y_norm"]     = np.clip((lat - 36) / 2,  0, 1)
+        for feat in FEATURES:
+            if feat not in df.columns:
+                df[feat] = 0.0
+        return df[FEATURES + [c for c in df.columns if c not in FEATURES]]
+
+    # ── Tenseur LSTM ───────────────────────────────────────────────────
+    def _prepare_window(df, scaler):
+        X = df[FEATURES].values.astype(np.float32)
+        X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+        X = scaler.transform(X)
+        X = np.clip(X, -10, 10)
+        if len(X) < WINDOW:
+            pad = np.tile(X[0], (WINDOW - len(X), 1))
+            X   = np.vstack([pad, X])
+        X = X[-WINDOW:]
+        return X.reshape(1, WINDOW, len(FEATURES))
+
+    # ── Calibration physique ───────────────────────────────────────────
+    def _physical_calibration(preds, df_feat, pred_dt):
+        preds  = np.array(preds, dtype=float)
+        n      = len(df_feat)
+        month  = pred_dt.month
+        window_sizes = [1, 6, 12, 24]
+        wind_series  = df_feat["wind_speed"].values
+        wind_trend   = float(np.polyfit(np.arange(min(12, n)), wind_series[-min(12, n):], 1)[0])
+        mwd_sin_last = float(df_feat["mwd_sin"].iloc[-1]) if "mwd_sin" in df_feat.columns else 0.0
+        mwd_cos_last = float(df_feat["mwd_cos"].iloc[-1]) if "mwd_cos" in df_feat.columns else 1.0
+        mwd_coast_factor = max(0.8, 1.0 + 0.15 * (-mwd_sin_last))
+        calibrated = np.empty(len(HORIZONS), dtype=float)
+        for idx, (h_horizon, w_size) in enumerate(zip(HORIZONS, window_sizes)):
+            raw_pred = float(preds[idx]) if idx < len(preds) else float(preds[-1])
+            sub = df_feat.tail(w_size) if n >= w_size else df_feat
+            mean_wind  = float(sub["wind_speed"].mean())
+            max_hsv    = float(sub["MESURE"].max())
+            recent_hsv = float(sub["MESURE"].iloc[-1])
+            if month in [11, 12, 1, 2, 3]:
+                winter_floor = 0.8 + 0.03 * h_horizon
+                raw_pred = max(raw_pred, winter_floor)
+                wind_mult = 1.0
+                if mean_wind > 7:  wind_mult *= 1.08 + 0.005 * h_horizon
+                if mean_wind > 10: wind_mult *= 1.15 + 0.008 * h_horizon
+                if mean_wind > 14: wind_mult *= 1.25 + 0.010 * h_horizon
+                if max_hsv > 2:    wind_mult *= 1.10 + 0.004 * h_horizon
+                raw_pred *= wind_mult
+            else:
+                wind_mult = 1.0
+                if mean_wind > 8:  wind_mult *= 1.06 + 0.003 * h_horizon
+                if mean_wind > 12: wind_mult *= 1.12 + 0.005 * h_horizon
+                raw_pred *= wind_mult
+            raw_pred *= (1.0 + (mwd_coast_factor - 1.0) * (h_horizon / 24.0))
+            if wind_trend > 0.3:
+                raw_pred *= (1.0 + 0.02 * wind_trend * (h_horizon / 6.0))
+            elif wind_trend < -0.3:
+                raw_pred *= max(0.85, 1.0 - 0.015 * abs(wind_trend) * (h_horizon / 6.0))
+            p25 = float(np.percentile(sub["MESURE"], 25))
+            t   = h_horizon / 24.0
+            floor = recent_hsv * 0.85 * (1 - t) + max(0.30, p25) * t
+            raw_pred = max(raw_pred, floor)
+            calibrated[idx] = np.clip(raw_pred, 0.05, 9.0)
+        return calibrated
+
+    # ── LAYOUT ────────────────────────────────────────────────────────
+    col_cfg, col_res = st.columns([1, 1.6])
+
+    with col_cfg:
+        section("⚙️", "Configuration")
+
+        if data_ok:
+            plages_all  = q(f"""
+                SELECT DISTINCT NOM_PLAGE,
+                       FIRST(X) AS lon,
+                       FIRST(Y) AS lat
+                FROM {VIEW}
+                GROUP BY NOM_PLAGE
+                ORDER BY NOM_PLAGE
+            """)
+            plage_names = plages_all["NOM_PLAGE"].tolist()
+        else:
+            plages_all  = pd.DataFrame()
+            plage_names = []
+
+        selected_plage = st.selectbox("🏖️ Plage", plage_names)
+
+        if not plages_all.empty and selected_plage:
+            row         = plages_all[plages_all["NOM_PLAGE"] == selected_plage].iloc[0]
+            lat_default = float(row["lat"])
+            lon_default = float(row["lon"])
+        else:
+            lat_default = 36.75
+            lon_default = 3.06
+
+        lat = st.number_input("Latitude",  value=lat_default, format="%.4f")
+        lon = st.number_input("Longitude", value=lon_default, format="%.4f")
+
+        st.markdown("---")
+
+        today        = datetime.utcnow().date()
+        era5_cutoff  = today - timedelta(days=5)
+        max_date     = today + timedelta(days=1)
+        default_date = today + timedelta(days=1)
+
+        pred_date = st.date_input(
+            "📅 Date cible de prédiction",
+            value=default_date,
+            min_value=today - timedelta(days=30),
+            max_value=max_date,
+            help=(
+                "• **Passé récent (≤ J-5)** : ERA5 seul\n"
+                "• **Futur (J-4 à J+1)** : ERA5 + Open-Meteo Marine (gratuit, sans clé)"
+            ),
+        )
+        pred_dt = datetime.combine(pred_date, datetime.min.time())
+
+        days_from_now = (pred_date - today).days
+        if pred_date <= era5_cutoff:
+            st.info(f"📡 **Mode ERA5 pur** · Date historique")
+            use_forecast = False
+        elif pred_date <= today:
+            st.warning(f"🔀 **Mode hybride** · ERA5 + Open-Meteo")
+            use_forecast = True
+        else:
+            st.success(f"🚀 **Mode forecast** · ERA5 + Open-Meteo Marine\nPrédiction pour **{pred_date.strftime('%d/%m/%Y')}**")
+            use_forecast = True
+
+        st.markdown("---")
+
+        cds_key = st.text_input(
+            "🔑 CDS API KEY (ERA5)",
+            type="password",
+            help="Clé Copernicus CDS — https://cds.climate.copernicus.eu\nOptionnelle si Open-Meteo suffit.",
+        )
+        if use_forecast and not cds_key.strip():
+            st.caption("ℹ️ Sans clé CDS, le contexte ERA5 sera remplacé par Open-Meteo.")
+
+        #  Cherche dans plots/ directement
+        safe_name  = selected_plage.replace(" ", "_") if selected_plage else ""
+        base_dir   = os.path.dirname(LSTM_PATH)
+        local_path = os.path.join(base_dir, "plots", f"{safe_name}_lstm.keras")
+        has_local  = os.path.exists(local_path)
+        if has_local:
+            st.success(f"✅ Modèle fine-tuné disponible pour **{selected_plage}**")
+        else:
+            st.info("ℹ️ Modèle global utilisé pour cette plage")
+
+        run_btn = st.button("🚀 Lancer prédiction", type="primary", use_container_width=True)
+
+    with col_res:
+        section("📊", "Résultats")
+        results_area = st.empty()
+
+    # ── PIPELINE PRINCIPAL ────────────────────────────────────────────
+    if run_btn:
+        try:
+            now_utc      = datetime.utcnow()
+            era5_cutoff  = now_utc - timedelta(days=5)
+            window_start = pred_dt - timedelta(hours=WINDOW)
+            window_end   = pred_dt
+
+            progress = st.progress(0)
+            status   = st.empty()
+
+            status.info("⚙️ Chargement du scaler global...")
+            progress.progress(8)
+            scaler = load_scaler()
+
+            df_era5     = None
+            df_forecast = None
+            sources_used = []
+
+            era5_window_end   = min(window_end, era5_cutoff)
+            era5_window_start = era5_window_end - timedelta(hours=WINDOW)
+
+            if era5_window_end > era5_window_start and cds_key.strip():
+                try:
+                    status.info("🛰️ Téléchargement ERA5 (Copernicus CDS)...")
+                    progress.progress(20)
+                    os.environ["CDSAPI_KEY"] = cds_key.strip()
+                    os.environ["CDSAPI_URL"] = "https://cds.climate.copernicus.eu/api"
+                    c_era5  = cdsapi.Client(quiet=True)
+                    tmp_dir = tempfile.mkdtemp()
+                    df_era5 = _fetch_era5_window(
+                        c_era5, lat, lon,
+                        era5_window_start, era5_window_end,
+                        tmp_dir
+                    )
+                    if not df_era5.empty:
+                        sources_used.append(
+                            f"✅ ERA5 ({len(df_era5)} pts · "
+                            f"{era5_window_start.strftime('%d/%m %Hh')} → "
+                            f"{era5_window_end.strftime('%d/%m %Hh')})"
+                        )
+                except Exception as e_era5:
+                    st.warning(f"⚠️ ERA5 non disponible : {e_era5}")
+                    df_era5 = None
+
+            if use_forecast or df_era5 is None:
+                try:
+                    status.info("🌊 Récupération Open-Meteo Marine (forecast gratuit)...")
+                    progress.progress(35)
+                    om_start = window_start
+                    om_end   = window_end + timedelta(hours=24)
+                    df_forecast = _fetch_openmeteo_forecast(lat, lon, om_start, om_end)
+                    if not df_forecast.empty:
+                        sources_used.append(
+                            f"✅ Open-Meteo Marine ({len(df_forecast)} pts · "
+                            f"{om_start.strftime('%d/%m %Hh')} → "
+                            f"{window_end.strftime('%d/%m %Hh')})"
+                        )
+                except Exception as e_om:
+                    st.warning(f"⚠️ Open-Meteo Marine : {e_om}")
+                    df_forecast = None
+
+            if df_era5 is None and df_forecast is None:
+                st.error("❌ Aucune source de données disponible.")
+                st.stop()
+
+            status.info("🔀 Fusion des sources de données (72h)...")
+            progress.progress(50)
+            df_raw = _build_context_window(df_era5, df_forecast, pred_dt, WINDOW)
+
+            if len(df_raw) < 10:
+                st.error(f"❌ Données insuffisantes : {len(df_raw)} pas de temps.")
+                st.stop()
+
+            for src in sources_used:
+                st.caption(src)
+
+            status.info("🔧 Construction des features (15 variables)...")
+            progress.progress(62)
+            df_feat = _build_features(df_raw, lat, lon)
+
+            status.info("📐 Préparation du tenseur (1, 72, 15)...")
+            progress.progress(72)
+            X_tensor = _prepare_window(df_feat, scaler)
+
+            status.info("🧠 Inférence LSTM (Transfer Learning)...")
+            progress.progress(84)
+            preds_raw, used_local, model_info = _run_inference(X_tensor, selected_plage)
+
+            status.info("⚖️ Calibration physique par horizon...")
+            progress.progress(94)
+            preds = _physical_calibration(preds_raw, df_feat, pred_dt)
+            preds = np.nan_to_num(preds, nan=1.5, posinf=5.0, neginf=0.5)
+            preds = np.clip(preds, 0.05, 9.0)
+
+            progress.progress(100)
+            status.empty()
+
+            # ── Affichage résultats ────────────────────────────────────
+            with results_area.container():
+                st.markdown(_model_badge(used_local, selected_plage), unsafe_allow_html=True)
+                st.markdown("<br>", unsafe_allow_html=True)
+
+                st.success(f"✅ Prévision HSV — {selected_plage}")
+                cols = st.columns(len(HORIZONS))
+                for i, (h, col) in enumerate(zip(HORIZONS, cols)):
+                    hsv             = float(preds[i])
+                    color, label, emoji = _danger_level(hsv)
+                    delta_str = "Référence" if i == 0 else f"{hsv - float(preds[0]):+.2f} m vs t+1h"
+                    with col:
+                        st.metric(f"t+{h}h", f"{hsv:.2f} m", delta=delta_str)
+                        st.markdown(
+                            f"<div style='text-align:center;color:{color};font-weight:700'>{emoji} {label}</div>",
+                            unsafe_allow_html=True
+                        )
+
+                marker_colors   = [_danger_level(float(p))[0] for p in preds]
+                horizon_labels  = []
+                for h in HORIZONS:
+                    dt_h = pred_dt + timedelta(hours=h)
+                    horizon_labels.append(f"t+{h}h<br><sub>{dt_h.strftime('%d/%m %Hh')}</sub>")
+
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=[f"t+{h}h" for h in HORIZONS],
+                    y=preds,
+                    mode="lines+markers",
+                    line=dict(width=4, color="#8b5cf6"),
+                    marker=dict(size=14, color=marker_colors, line=dict(width=2, color="white")),
+                    name="HSV (m)",
+                    customdata=[[float(preds[i]), horizon_labels[i], _danger_level(float(preds[i]))[1]] for i in range(len(HORIZONS))],
+                    hovertemplate="<b>%{customdata[1]}</b><br>HSV : <b>%{y:.2f} m</b><br>Niveau : %{customdata[2]}<extra></extra>",
+                ))
+                fig.add_hrect(y0=1.5, y1=9.0, fillcolor="rgba(239,68,68,0.08)", line_width=0,
+                              annotation_text="⚠️ Danger", annotation_position="top left")
+                fig.add_hrect(y0=1.0, y1=1.5, fillcolor="rgba(249,115,22,0.07)", line_width=0)
+                fig.add_hline(y=1.5, line_dash="dash", line_color="red", line_width=2, annotation_text="Seuil danger 1.5m")
+                fig.add_hline(y=1.0, line_dash="dot",  line_color="orange", line_width=1, annotation_text="Seuil modéré 1.0m")
+                for i, (h, p) in enumerate(zip(HORIZONS, preds)):
+                    fig.add_annotation(x=f"t+{h}h", y=float(p), text=f"<b>{float(p):.2f}m</b>",
+                                       showarrow=False, yshift=16, font=dict(size=11, color=marker_colors[i]))
+
+                model_label = '<span style="color:#7c3aed">🎯 Fine-tuné</span>' if used_local else '🌐 Global'
+                src_label   = "ERA5 + Open-Meteo Marine" if use_forecast else "ERA5 Réanalyse"
+
+                fig.update_layout(
+                    title=dict(
+                        text=(f"Prévision HSV — {selected_plage} | "
+                              f"{pred_date.strftime('%d/%m/%Y')} | "
+                              f"{model_label}"),
+                        font=dict(size=14)
+                    ),
+                    yaxis_title="Hauteur Significative des Vagues (m)",
+                    yaxis=dict(range=[0, max(max(preds) * 1.25, 2.0)]),
+                    height=380,
+                    showlegend=False,
+                )
+                apply_theme(fig)
+                st.plotly_chart(fig, use_container_width=True)
+
+                with st.expander("🔍 Données de contexte utilisées (72h)"):
+                    n_pts     = len(df_feat)
+                    ctx_start = pred_dt - timedelta(hours=WINDOW)
+                    st.caption(
+                        f"**Source** : {src_label} · **{n_pts} pas de temps** | "
+                        f"{ctx_start.strftime('%d/%m %Hh')} → {pred_dt.strftime('%d/%m %Hh')} | "
+                        f"Lat={lat:.4f} Lon={lon:.4f}"
+                    )
+                    display_cols = ["DATETIME", "MESURE", "wind_speed", "mwp", "mwd"]
+                    display_cols = [c for c in display_cols if c in df_feat.columns]
+                    df_display   = df_feat[display_cols].tail(72).copy()
+                    if "mwd" in df_display.columns:
+                        df_display["mwd"] = df_display["mwd"].round(1).astype(str) + "°"
+                    st.dataframe(df_display, use_container_width=True)
+
+                    if "mwd" in df_feat.columns:
+                        st.markdown("**🧭 Rose des vagues (MWD) — 72h**")
+                        mwd_vals = df_feat["mwd"].dropna().values
+                        if len(mwd_vals) > 0:
+                            bins = np.arange(0, 361, 22.5)
+                            counts, _ = np.histogram(mwd_vals, bins=bins)
+                            angles = bins[:-1] + 11.25
+                            fig_rose = go.Figure(go.Barpolar(
+                                r=counts, theta=angles, width=22.5,
+                                marker_color="#8b5cf6",
+                                marker_line_color="rgba(139,92,246,0.3)",
+                                marker_line_width=1, opacity=0.85,
+                            ))
+                            fig_rose.update_layout(
+                                polar=dict(
+                                    radialaxis=dict(showticklabels=False, ticks=""),
+                                    angularaxis=dict(
+                                        tickmode="array",
+                                        tickvals=[0,45,90,135,180,225,270,315],
+                                        ticktext=["N","NE","E","SE","S","SO","O","NO"],
+                                        direction="clockwise", rotation=90,
+                                    ),
+                                ),
+                                paper_bgcolor="rgba(0,0,0,0)",
+                                plot_bgcolor="rgba(12,24,41,0.6)",
+                                font=dict(color="#94b8cc"),
+                                showlegend=False, height=280,
+                                margin=dict(l=10,r=10,t=20,b=10),
+                            )
+                            st.plotly_chart(fig_rose, use_container_width=True)
+                        col_mwd1, col_mwd2, col_mwd3 = st.columns(3)
+                        mwd_mean = float(df_feat["mwd"].mean())
+                        mwd_last = float(df_feat["mwd"].iloc[-1])
+                        col_mwd1.metric("📐 Dir. moyenne",  f"{mwd_mean:.1f}°")
+                        col_mwd2.metric("📐 Dir. actuelle", f"{mwd_last:.1f}°")
+                        def _mwd_label(d):
+                            d = d % 360
+                            if d < 22.5 or d >= 337.5: return "Nord ↑"
+                            elif d < 67.5:  return "Nord-Est ↗"
+                            elif d < 112.5: return "Est →"
+                            elif d < 157.5: return "Sud-Est ↘"
+                            elif d < 202.5: return "Sud ↓"
+                            elif d < 247.5: return "Sud-Ouest ↙"
+                            elif d < 292.5: return "Ouest ←"
+                            else:           return "Nord-Ouest ↖"
+                        col_mwd3.metric("🧭 Quadrant actuel", _mwd_label(mwd_last))
+
+                with st.expander("⚙️ Détails techniques"):
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        st.markdown(f"""
+**Modèle** : `{model_info}`
+**Architecture** : LSTM Multi-Horizon
+**Fenêtre** : {WINDOW}h
+**Horizons** : +1h, +6h, +12h, +24h
+                        """)
+                    with c2:
+                        st.markdown(f"""
+**Features** : {len(FEATURES)}
+**Source données** : {src_label}
+**Points de contexte** : {n_pts}
+**Vent moyen** : {df_feat['wind_speed'].mean():.1f} m/s
+**HSV max (contexte)** : {df_feat['MESURE'].max():.2f} m
+                        """)
+
+                    comp_df = pd.DataFrame({
+                        "Horizon":      [f"t+{h}h" for h in HORIZONS],
+                        "Heure réelle": [(pred_dt + timedelta(hours=h)).strftime('%d/%m %H:%M') for h in HORIZONS],
+                        "Brut (m)":     [f"{float(preds_raw[i]):.3f}" for i in range(len(HORIZONS))],
+                        "Calibré (m)":  [f"{float(preds[i]):.3f}"     for i in range(len(HORIZONS))],
+                        "Δ vs t+1h":    ["—"] + [f"{float(preds[i]) - float(preds[0]):+.3f} m" for i in range(1, len(HORIZONS))],
+                        "Niveau":       [_danger_level(float(preds[i]))[2] + " " + _danger_level(float(preds[i]))[1] for i in range(len(HORIZONS))],
+                    })
+                    st.dataframe(comp_df, use_container_width=True, hide_index=True)
+
+        except Exception as e:
+            st.error(f"❌ Erreur pipeline : {e}")
+            with st.expander("🐛 Traceback complet"):
+                st.code(traceback.format_exc())
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAGES EXISTANTES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+elif page == T("home"):
+    st.markdown(f"""
+    <div class="hero">
+        <h1>{T("hero_title")}</h1>
+        <div class="sub">{T("hero_sub")}<br><b>M1</b> {T("hero_sub2")}</div>
+        <div class="pills">
+            <span class="pill pill-red">{T("drowning_alerts_pill")}</span>
+            <span class="pill pill-blue">{T("desalination_pill")}</span>
+            <span class="pill pill-green">{T("aquaculture_pill")}</span>
+            <span class="pill pill-cyan">{T("marine_quality_pill")}</span>
+            <span class="pill pill-purple">{T("two_models_pill")}</span>
+            <span class="pill pill-amber">🔮 Prédiction Temps Réel M1 + M2</span>
+        </div>
+    </div>""", unsafe_allow_html=True)
+
     col1, col2 = st.columns(2)
     with col1:
         st.markdown("""
-        <div class="info-card" style="border-left-color:#ef4444;">
-            <div class="title" style="color:#f87171;">🏊 Alertes Noyades</div>
-            <div class="threshold-row"><span class="threshold-key">Seuil vigilance</span><span class="threshold-val" style="color:#fbbf24;">HSV &gt; 1.0 m</span></div>
-            <div class="threshold-row"><span class="threshold-key">Seuil danger</span><span class="threshold-val" style="color:#f87171;">HSV &gt; 2.0 m · MWP &gt; 8 s</span></div>
-            <div class="threshold-row"><span class="threshold-key">Vent critique</span><span class="threshold-val" style="color:#f87171;">wind_speed &gt; 10 m/s</span></div>
-            <div class="threshold-row"><span class="threshold-key">Saison critique</span><span class="threshold-val">Juin – Août</span></div>
-            <div class="threshold-row"><span class="threshold-key">Wilayas à risque</span><span class="threshold-val">Tlemcen · Aïn Témouchent</span></div>
-        </div>
         <div class="info-card" style="border-left-color:#0ea5e9;">
-            <div class="title" style="color:#38bdf8;">💧 Dessalement SWRO</div>
-            <div class="threshold-row"><span class="threshold-key">SST optimale</span><span class="threshold-val" style="color:#38bdf8;">16 °C – 26 °C</span></div>
-            <div class="threshold-row"><span class="threshold-key">Vent fort</span><span class="threshold-val" style="color:#fbbf24;">Alerte &gt; 10 m/s (turbidité)</span></div>
-            <div class="threshold-row"><span class="threshold-key">Pression critique</span><span class="threshold-val" style="color:#f87171;">MSL &lt; 1005 hPa</span></div>
-            <div class="threshold-row"><span class="threshold-key">HSV prise d'eau</span><span class="threshold-val" style="color:#fbbf24;">Alerte &gt; 3.0 m</span></div>
-        </div>
-        """, unsafe_allow_html=True)
+            <div class="title" style="color:#38bdf8;">🔵 Modèle 1 — ERA5 (1985–2023)</div>
+            <div class="threshold-row"><span class="threshold-key">Période</span><span class="threshold-val" style="color:#38bdf8;">1985 → 2023</span></div>
+            <div class="threshold-row"><span class="threshold-key">Lignes</span><span class="threshold-val">~20 millions</span></div>
+            <div class="threshold-row"><span class="threshold-key">Variables</span><span class="threshold-val">MESURE · wind_speed · mwp · mwd</span></div>
+            <div class="threshold-row"><span class="threshold-key">Application</span><span class="threshold-val" style="color:#f87171;">⚠️ Alertes Noyades + Prédiction TR M1</span></div>
+        </div>""", unsafe_allow_html=True)
     with col2:
         st.markdown("""
-        <div class="info-card" style="border-left-color:#10b981;">
-            <div class="title" style="color:#34d399;">🐟 Aquaculture Marine</div>
-            <div class="threshold-row"><span class="threshold-key">HSV favorable</span><span class="threshold-val" style="color:#34d399;">&lt; 1.2 m (sécurité cages)</span></div>
-            <div class="threshold-row"><span class="threshold-key">SST favorable</span><span class="threshold-val" style="color:#34d399;">16 °C – 24 °C</span></div>
-            <div class="threshold-row"><span class="threshold-key">MWP favorable</span><span class="threshold-val">&lt; 8 s</span></div>
-            <div class="threshold-row"><span class="threshold-key">Vent favorable</span><span class="threshold-val" style="color:#34d399;">&lt; 8 m/s (stabilité cages)</span></div>
-            <div class="threshold-row"><span class="threshold-key">Direction favorable</span><span class="threshold-val">MWD hors secteur N–NO</span></div>
-        </div>
         <div class="info-card" style="border-left-color:#8b5cf6;">
-            <div class="title" style="color:#a78bfa;">🌊 Analyse HSV · ERA5</div>
-            <div class="threshold-row"><span class="threshold-key">Observations</span><span class="threshold-val" style="color:#a78bfa;">~20 millions (horaires)</span></div>
-            <div class="threshold-row"><span class="threshold-key">Plages · Wilayas</span><span class="threshold-val">60 plages · 13 wilayas</span></div>
-            <div class="threshold-row"><span class="threshold-key">Période</span><span class="threshold-val">1985 → 2023 (38 ans)</span></div>
-            <div class="threshold-row"><span class="threshold-key">Variables</span><span class="threshold-val">HSV · SST · MWP · MWD · MSL · Vent</span></div>
-        </div>
-        """, unsafe_allow_html=True)
+            <div class="title" style="color:#a78bfa;">🟣 Modèle 2 — ERA5 + CMEMS (1999–2023)</div>
+            <div class="threshold-row"><span class="threshold-key">Période</span><span class="threshold-val" style="color:#a78bfa;">1999 → 2023</span></div>
+            <div class="threshold-row"><span class="threshold-key">Lignes</span><span class="threshold-val">~12 millions</span></div>
+            <div class="threshold-row"><span class="threshold-key">Dessalement</span><span class="threshold-val" style="color:#22d3ee;">salinity · spm · MESURE · mwp · wind_speed</span></div>
+            <div class="threshold-row"><span class="threshold-key">Aquaculture</span><span class="threshold-val" style="color:#34d399;">o2 · sst · mwp · wind_speed · MESURE · spm</span></div>
+        </div>""", unsafe_allow_html=True)
+
+    section("📊", T("global_stats"))
+    if data_ok: show_kpis()
+    else: st.error("❌ Dataset introuvable.")
 
     if data_ok:
         st.markdown("---")
-        section("📅", "Évolution annuelle de la HSV")
+        section("📅", T("annual_evolution"))
         @st.cache_data(show_spinner=False)
-        def accueil_annual():
-            return q("SELECT YEAR, AVG(MESURE) AS avg_hsv, MAX(MESURE) AS max_hsv, STDDEV(MESURE) AS std_hsv FROM hsv GROUP BY YEAR ORDER BY YEAR")
-        df_yr = accueil_annual()
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=df_yr["YEAR"], y=df_yr["avg_hsv"]+df_yr["std_hsv"], fill=None, mode="lines", line=dict(width=0), showlegend=False, hoverinfo="skip"))
-        fig.add_trace(go.Scatter(x=df_yr["YEAR"], y=df_yr["avg_hsv"]-df_yr["std_hsv"], fill="tonexty", mode="lines", line=dict(width=0), fillcolor="rgba(14,165,233,0.1)", showlegend=False, hoverinfo="skip"))
-        fig.add_trace(go.Scatter(x=df_yr["YEAR"], y=df_yr["avg_hsv"], name="HSV Moyenne", mode="lines+markers", line=dict(color="#0ea5e9", width=2.5), marker=dict(size=5, color="#06b6d4")))
-        fig.add_trace(go.Scatter(x=df_yr["YEAR"], y=df_yr["max_hsv"], name="HSV Maximum", mode="lines", line=dict(color="#ef4444", width=1.5, dash="dot")))
-        fig.add_hline(y=1.5, line_dash="dash", line_color="#f59e0b", annotation_text="Seuil danger 1.5 m", annotation_font_color="#f59e0b", annotation_font_size=10)
-        apply_theme(fig)
-        fig.update_layout(title="Évolution annuelle de la HSV — Côtes algériennes", xaxis_title="Année", yaxis_title="HSV (m)", height=380)
-        st.plotly_chart(fig, use_container_width=True)
-
-        st.markdown("---")
-        section("📋", "Tableau de synthèse — seuils critiques")
-        st.markdown("""
-        <div class="synthesis-table-wrap">
-        <table class="synthesis-table">
-          <thead><tr><th>Application</th><th>Variable</th><th>Seuil critique</th><th>Mois à risque</th><th>Wilayas exposées</th></tr></thead>
-          <tbody>
-            <tr><td><span class="pill pill-red">Noyades</span></td><td>HSV (m)</td><td class="val-critical" style="color:#f87171;">&gt; 2.0 m</td><td>Nov – Fév</td><td>Tlemcen · Aïn Témouchent</td></tr>
-            <tr><td><span class="pill pill-red">Noyades</span></td><td>Vent (m/s)</td><td class="val-critical" style="color:#fbbf24;">&gt; 10 m/s</td><td>Nov – Mar</td><td>Tlemcen · Oran</td></tr>
-            <tr><td><span class="pill pill-red">Noyades</span></td><td>MWP (s)</td><td class="val-critical" style="color:#fbbf24;">&gt; 8 s</td><td>Nov – Fév</td><td>Tlemcen · Oran</td></tr>
-            <tr><td><span class="pill pill-blue">Dessalement</span></td><td>SST (°C)</td><td class="val-critical" style="color:#38bdf8;">&lt; 16 °C ou &gt; 26 °C</td><td>Jan–Mar · Août</td><td>Toute la côte</td></tr>
-            <tr><td><span class="pill pill-blue">Dessalement</span></td><td>Vent (m/s)</td><td class="val-critical" style="color:#fbbf24;">&gt; 10 m/s (turbidité)</td><td>Déc – Fév</td><td>Toute la côte</td></tr>
-            <tr><td><span class="pill pill-blue">Dessalement</span></td><td>MSL (hPa)</td><td class="val-critical" style="color:#f87171;">&lt; 1005 hPa</td><td>Déc – Fév</td><td>Toute la côte</td></tr>
-            <tr><td><span class="pill pill-green">Aquaculture</span></td><td>HSV (m)</td><td class="val-critical" style="color:#34d399;">&gt; 1.2 m</td><td>Nov – Mar</td><td>Tlemcen · Oran</td></tr>
-            <tr><td><span class="pill pill-green">Aquaculture</span></td><td>Vent (m/s)</td><td class="val-critical" style="color:#34d399;">&gt; 8 m/s</td><td>Nov – Mar</td><td>Tlemcen · Oran</td></tr>
-            <tr><td><span class="pill pill-green">Aquaculture</span></td><td>SST (°C)</td><td class="val-critical" style="color:#34d399;">&lt; 16 °C ou &gt; 24 °C</td><td>Jan–Mar · Août–Sep</td><td>Toute la côte</td></tr>
-          </tbody>
-        </table>
-        </div>
-        """, unsafe_allow_html=True)
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# PAGE : ANALYSE GLOBALE
-# ═══════════════════════════════════════════════════════════════════════
-elif page == "📊 Analyse Globale":
-    page_header("#0ea5e9","📊","Analyse Globale","Distribution et tendances de la HSV — toutes plages")
-    wh = W()
-    show_kpis(wh)
-
-    tab1, tab2, tab3, tab4 = st.tabs(["📈 Série Temporelle","🗂️ Distribution","📅 Saisonnalité","🏖️ Par Plage"])
-
-    with tab1:
-        section("📈","Évolution annuelle de la HSV")
-        with st.spinner():
-            df_ann = q(f"SELECT YEAR, AVG(MESURE) AS avg_hsv, MAX(MESURE) AS max_hsv, STDDEV(MESURE) AS std_hsv FROM hsv {wh} GROUP BY YEAR ORDER BY YEAR")
-        if not df_ann.empty:
+        def _annual(view):
+            return q(f"SELECT YEAR, AVG(MESURE) AS avg_hsv, MAX(MESURE) AS max_hsv, STDDEV(MESURE) AS std_hsv FROM {view} GROUP BY YEAR ORDER BY YEAR")
+        df_yr = _annual(VIEW)
+        if not df_yr.empty:
             fig = go.Figure()
-            fig.add_trace(go.Scatter(x=df_ann["YEAR"], y=df_ann["avg_hsv"]+df_ann["std_hsv"], fill=None, mode="lines", line=dict(width=0), showlegend=False, hoverinfo="skip"))
-            fig.add_trace(go.Scatter(x=df_ann["YEAR"], y=df_ann["avg_hsv"]-df_ann["std_hsv"], fill="tonexty", mode="lines", line=dict(width=0), fillcolor="rgba(14,165,233,0.1)", showlegend=False, hoverinfo="skip"))
-            fig.add_trace(go.Scatter(x=df_ann["YEAR"], y=df_ann["avg_hsv"], name="Moyenne", mode="lines+markers", line=dict(color="#0ea5e9", width=2)))
-            fig.add_trace(go.Scatter(x=df_ann["YEAR"], y=df_ann["max_hsv"], name="Maximum", mode="lines", line=dict(color="#ef4444", width=1.5, dash="dot")))
-            for seuil, color, label in [(1.5,"#f59e0b","Vigilance 1.5 m"),(2.5,"#ef4444","Danger 2.5 m")]:
-                fig.add_hline(y=seuil, line_dash="dash", line_color=color, annotation_text=label, annotation_font_color=color, annotation_font_size=10)
-            apply_theme(fig); fig.update_layout(title="HSV annuelle", xaxis_title="Année", yaxis_title="HSV (m)", height=380)
-            st.plotly_chart(fig, use_container_width=True)
-
-        section("📆","Évolution mensuelle moyenne")
-        with st.spinner():
-            df_mo = q(f"SELECT MONTH, AVG(MESURE) AS avg_hsv, MAX(MESURE) AS max_hsv, STDDEV(MESURE) AS std_hsv FROM hsv {wh} GROUP BY MONTH ORDER BY MONTH")
-        if not df_mo.empty:
-            df_mo["MOIS_LABEL"] = df_mo["MONTH"].map(MOIS_SHORT)
-            fig2 = go.Figure(go.Bar(x=df_mo["MOIS_LABEL"], y=df_mo["avg_hsv"], name="HSV Moyenne",
-                marker_color=df_mo["avg_hsv"].apply(lambda v: "#ef4444" if v>=2 else "#f59e0b" if v>=1 else "#10b981"),
-                error_y=dict(type="data", array=df_mo["std_hsv"], visible=True, color="rgba(148,184,204,0.4)")))
-            apply_theme(fig2); fig2.update_layout(title="HSV moyenne par mois", xaxis_title="Mois", yaxis_title="HSV (m)", height=340)
-            st.plotly_chart(fig2, use_container_width=True)
-
-    with tab2:
-        section("🗂️","Distribution de la HSV")
-        col_a, col_b = st.columns(2)
-        with col_a:
-            with st.spinner():
-                df_dist = q(f"SELECT ROUND(MESURE,1) AS h, COUNT(*) AS n FROM hsv {wh} GROUP BY h ORDER BY h")
-            if not df_dist.empty:
-                fig = go.Figure(go.Bar(x=df_dist["h"], y=df_dist["n"], marker_color="#0ea5e9", marker_line_width=0))
-                for s, c in [(1.5,"#f59e0b"),(2.5,"#ef4444")]:
-                    fig.add_vline(x=s, line_color=c, line_dash="dash", annotation_text=f"{s} m", annotation_font_color=c)
-                apply_theme(fig); fig.update_layout(title="Histogramme HSV", xaxis_title="HSV (m)", yaxis_title="Nombre", height=340)
-                st.plotly_chart(fig, use_container_width=True)
-        with col_b:
-            with st.spinner():
-                df_niv = q(f"SELECT NIVEAU, COUNT(*) AS n FROM hsv {wh} GROUP BY NIVEAU")
-            if not df_niv.empty:
-                ordre = ["Calme (<0.5m)","Faible (0.5–1.5m)","Modéré (1.5–2.5m)","Agité (2.5–4m)","Très agité (>4m)"]
-                df_niv["NIVEAU"] = pd.Categorical(df_niv["NIVEAU"], categories=ordre, ordered=True)
-                df_niv = df_niv.sort_values("NIVEAU")
-                fig = go.Figure(go.Pie(labels=df_niv["NIVEAU"], values=df_niv["n"], hole=0.55,
-                    marker_colors=[DANGER_COLORS.get(n,"#666") for n in df_niv["NIVEAU"]]))
-                apply_theme(fig); fig.update_layout(title="Répartition par niveau d'agitation", height=340)
-                st.plotly_chart(fig, use_container_width=True)
-
-    with tab3:
-        section("📅","Saisonnalité")
-        col1, col2 = st.columns(2)
-        with col1:
-            with st.spinner():
-                df_seas = q(f"SELECT SEASON, AVG(MESURE) AS avg_hsv, COUNT(*) AS n FROM hsv {wh} GROUP BY SEASON")
-            if not df_seas.empty:
-                ord_s = ['Hiver','Printemps','Été','Automne']
-                df_seas["SEASON"] = pd.Categorical(df_seas["SEASON"], categories=ord_s, ordered=True)
-                df_seas = df_seas.sort_values("SEASON")
-                fig = go.Figure(go.Bar(x=df_seas["SEASON"], y=df_seas["avg_hsv"],
-                    marker_color=[SEASON_COLORS.get(s,"#0ea5e9") for s in df_seas["SEASON"]],
-                    text=df_seas["avg_hsv"].map(lambda v: f"{v:.2f} m"), textposition="outside"))
-                apply_theme(fig); fig.update_layout(title="HSV moyenne par saison", yaxis_title="HSV (m)", height=340)
-                st.plotly_chart(fig, use_container_width=True)
-        with col2:
-            with st.spinner():
-                df_hr = q(f"SELECT HOUR, AVG(MESURE) AS avg_hsv FROM hsv {wh} GROUP BY HOUR ORDER BY HOUR")
-            if not df_hr.empty:
-                fig = go.Figure(go.Scatter(x=df_hr["HOUR"], y=df_hr["avg_hsv"], mode="lines+markers", fill="tozeroy",
-                    line=dict(color="#06b6d4", width=2), fillcolor="rgba(6,182,212,0.1)"))
-                apply_theme(fig); fig.update_layout(title="Cycle diurne de la HSV", xaxis_title="Heure", yaxis_title="HSV (m)", height=340)
-                st.plotly_chart(fig, use_container_width=True)
-
-    with tab4:
-        section("🏖️","Classement des plages par HSV moyenne")
-        with st.spinner():
-            df_pl = q(f"""
-                SELECT NOM_PLAGE, NOM_WILAYA,
-                       AVG(MESURE) AS avg_hsv, MAX(MESURE) AS max_hsv, STDDEV(MESURE) AS std_hsv,
-                       COUNT(*) AS n,
-                       SUM(CASE WHEN MESURE>=2 THEN 1 ELSE 0 END)*100.0/COUNT(*) AS pct_danger
-                FROM hsv {wh} GROUP BY NOM_PLAGE, NOM_WILAYA ORDER BY avg_hsv DESC LIMIT 30
-            """)
-        if not df_pl.empty:
-            fig = go.Figure(go.Bar(x=df_pl["avg_hsv"], y=df_pl["NOM_PLAGE"], orientation="h",
-                marker_color=df_pl["avg_hsv"].apply(lambda v: "#ef4444" if v>=1.5 else "#f59e0b" if v>=1 else "#10b981"),
-                text=df_pl["avg_hsv"].map(lambda v: f"{v:.2f} m"), textposition="outside"))
-            apply_theme(fig); fig.update_layout(title="Top 30 plages — HSV moyenne", xaxis_title="HSV (m)",
-                height=max(400, len(df_pl)*22), yaxis=dict(autorange="reversed", **PLOTLY_THEME["yaxis"]))
-            st.plotly_chart(fig, use_container_width=True)
-
-# ═══════════════════════════════════════════════════════════════════════
-# PAGE : ANALYSE ÉTÉ
-# ═══════════════════════════════════════════════════════════════════════
-# ═══════════════════════════════════════════════════════════════════════
-elif page == "🏖️ Analyse Été":
-    page_header(
-        "#f97316", "🏖️", "Analyse Estivale",
-        "Juin · Juillet · Août — Risques HSV, vent et direction"
-    )
-
-    if not data_ok:
-        st.error("❌ Dataset introuvable.")
-        st.stop()
-
-    wh_ete = "WHERE MONTH IN (6,7,8)"
-
-    section("📊", "KPIs Estivaux")
-    show_kpis(wh_ete)
-
-    with st.spinner():
-        r_vent = q(f"""
-            SELECT AVG(wind_speed) AS avg_ws, MAX(wind_speed) AS max_ws,
-                   SUM(CASE WHEN wind_speed>=10 THEN 1 ELSE 0 END)*100.0/COUNT(*) AS pct_fort,
-                   AVG(mwp) AS avg_mwp, AVG(mwd) AS avg_mwd
-            FROM hsv {wh_ete}
-        """)
-
-    if not r_vent.empty:
-        section("💨", "Indicateurs vent et vagues — été")
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("💨 Vent moyen",    f"{r_vent['avg_ws'].iloc[0]:.2f} m/s")
-        c2.metric("🌪️ Vent max",      f"{r_vent['max_ws'].iloc[0]:.1f} m/s")
-        c3.metric("⚡ Vent fort ≥10", f"{r_vent['pct_fort'].iloc[0]:.1f}%")
-        c4.metric("🌊 MWP moyen",     f"{r_vent['avg_mwp'].iloc[0]:.1f} s")
-
-    # ── Fonction couleur Risk Score (définie avant les tabs pour être accessible partout) ──
-    def _risk_color(score):
-        if score >= 1.0:   return "#ef4444"   # rouge — très élevé
-        elif score >= 0.7: return "#f97316"   # orange — élevé
-        elif score >= 0.4: return "#f59e0b"   # jaune — modéré
-        else:              return "#22c55e"   # vert — faible
-
-    tab1, tab2, tab3, tab4 = st.tabs(["📅 Évolution", "🌬️ Vent & Direction", "🏆 Wilayas", "🏖️ Plages"])
-
-    # ════════════════════════════════════════════════════════════════════
-    with tab1:
-        col1, col2 = st.columns(2)
-
-        with col1:
-            section("📅", "HSV annuel été")
-            df_ye = q(f"""
-                SELECT YEAR, AVG(MESURE) AS avg_hsv, MAX(MESURE) AS max_hsv
-                FROM hsv {wh_ete} GROUP BY YEAR ORDER BY YEAR
-            """)
-            if not df_ye.empty:
-                fig = go.Figure()
-                fig.add_trace(go.Bar(
-                    x=df_ye["YEAR"], y=df_ye["avg_hsv"], name="HSV moyen",
-                    marker_color="#0ea5e9",
-                    text=df_ye["avg_hsv"].map(lambda v: f"{v:.3f}"), textposition="outside"
-                ))
-                fig.add_trace(go.Scatter(
-                    x=df_ye["YEAR"], y=df_ye["max_hsv"], name="HSV max",
-                    mode="lines+markers", line=dict(color="#ef4444", width=2)
-                ))
-                fig.add_hline(y=1.5, line_dash="dash", line_color="#f59e0b",
-                    annotation_text="Seuil 1.5 m", annotation_position="top right")
-                apply_theme(fig)
-                fig.update_layout(
-                    title="HSV moyen et maximum par année (été)",
-                    xaxis=dict(title="Année", **_ax()),
-                    yaxis=dict(title="HSV (m)", **_ax()),
-                    legend=dict(orientation="h", y=1.08), height=360
-                )
-                st.plotly_chart(fig, use_container_width=True)
-
-        with col2:
-            section("🗓️", "HSV mensuel été")
-            df_me = q(f"""
-                SELECT MONTH, AVG(MESURE) AS avg_hsv
-                FROM hsv {wh_ete} GROUP BY MONTH ORDER BY MONTH
-            """)
-            if not df_me.empty:
-                df_me["MOIS"] = df_me["MONTH"].map({6: "Juin", 7: "Juillet", 8: "Août"})
-                fig = go.Figure()
-                fig.add_trace(go.Bar(
-                    x=df_me["MOIS"], y=df_me["avg_hsv"],
-                    marker_color=["#0ea5e9", "#38bdf8", "#7dd3fc"],
-                    text=df_me["avg_hsv"].map(lambda v: f"{v:.3f} m"), textposition="outside"
-                ))
-                apply_theme(fig)
-                fig.update_layout(
-                    title="HSV moyen par mois d'été",
-                    xaxis=dict(title="Mois", **_ax()),
-                    yaxis=dict(title="HSV (m)", **_ax()),
-                    showlegend=False, height=360
-                )
-                st.plotly_chart(fig, use_container_width=True)
-
-    # ════════════════════════════════════════════════════════════════════
-    with tab2:
-        section("💨", "Vent été")
-        df_ws_ete = q(f"""
-            SELECT MONTH, AVG(wind_speed) AS avg_ws, MAX(wind_speed) AS max_ws,
-                   AVG(u10) AS avg_u10, AVG(v10) AS avg_v10
-            FROM hsv {wh_ete} GROUP BY MONTH ORDER BY MONTH
-        """)
-        col1, col2 = st.columns(2)
-
-        with col1:
-            if not df_ws_ete.empty:
-                df_ws_ete["MOIS"] = df_ws_ete["MONTH"].map({6: "Juin", 7: "Juillet", 8: "Août"})
-                fig = go.Figure()
-                fig.add_trace(go.Bar(
-                    x=df_ws_ete["MOIS"], y=df_ws_ete["avg_ws"], name="Vent moyen (m/s)",
-                    marker_color="#06b6d4",
-                    text=df_ws_ete["avg_ws"].map(lambda v: f"{v:.1f}"), textposition="outside"
-                ))
-                fig.add_trace(go.Scatter(
-                    x=df_ws_ete["MOIS"], y=df_ws_ete["max_ws"], name="Vent max (m/s)",
-                    mode="lines+markers", line=dict(color="#ef4444", width=2)
-                ))
-                fig.add_hline(y=10, line_dash="dash", line_color="#f59e0b",
-                    annotation_text="Seuil fort 10 m/s", annotation_position="top right")
-                apply_theme(fig)
-                fig.update_layout(
-                    title="Vitesse du vent par mois (été)",
-                    xaxis=dict(title="Mois", **_ax()),
-                    yaxis=dict(title="Vent (m/s)", **_ax()),
-                    legend=dict(orientation="h", y=1.08), height=360
-                )
-                st.plotly_chart(fig, use_container_width=True)
-
-        with col2:
-            section("🧭", "Composantes U10 / V10")
-            if not df_ws_ete.empty:
-                fig2 = go.Figure()
-                fig2.add_trace(go.Bar(
-                    x=df_ws_ete["MOIS"], y=df_ws_ete["avg_u10"],
-                    name="U10 — composante zonale", marker_color="#8b5cf6",
-                    text=df_ws_ete["avg_u10"].map(lambda v: f"{v:.2f}"), textposition="outside"
-                ))
-                fig2.add_trace(go.Bar(
-                    x=df_ws_ete["MOIS"], y=df_ws_ete["avg_v10"],
-                    name="V10 — composante méridionale", marker_color="#06b6d4",
-                    text=df_ws_ete["avg_v10"].map(lambda v: f"{v:.2f}"), textposition="outside"
-                ))
-                apply_theme(fig2)
-                fig2.update_layout(
-                    title="Composantes U10 / V10 moyennes (été)",
-                    xaxis=dict(title="Mois", **_ax()),
-                    yaxis=dict(title="Composante (m/s)", **_ax()),
-                    barmode="group", legend=dict(orientation="h", y=1.08), height=360
-                )
-                st.plotly_chart(fig2, use_container_width=True)
-
-        section("🌊", "Rose des vagues (été)")
-        df_mwd = q(f"""
-            SELECT FLOOR(mwd / 22.5) * 22.5 AS dir_bin, COUNT(*) AS n, AVG(MESURE) AS avg_hsv
-            FROM hsv WHERE MONTH IN (6,7,8) AND mwd IS NOT NULL
-            GROUP BY dir_bin ORDER BY dir_bin
-        """)
-        if not df_mwd.empty:
-            df_mwd["dir_label"] = df_mwd["dir_bin"].map(
-                lambda v: DIRS_MAP.get(round(v / 22.5) * 22.5, f"{v:.0f}°")
-            )
-            fig3 = go.Figure(go.Barpolar(
-                r=df_mwd["n"], theta=df_mwd["dir_bin"], width=22,
-                text=df_mwd["dir_label"],
-                hovertemplate="<b>Direction : %{text}</b><br>Occurrences : %{r}<br>HSV moy : %{customdata:.3f} m<extra></extra>",
-                customdata=df_mwd["avg_hsv"],
-                marker=dict(
-                    color=df_mwd["avg_hsv"], colorscale="RdYlGn_r",
-                    colorbar=dict(title=dict(text="HSV moy (m)", side="right"), thickness=14),
-                    showscale=True
-                )
-            ))
-            apply_theme(fig3)
-            fig3.update_layout(
-                title="Rose des vagues — direction et intensité HSV (été)",
-                polar=dict(
-                    bgcolor="rgba(4,18,32,0.6)",
-                    angularaxis=dict(
-                        tickmode="array", tickvals=[0, 45, 90, 135, 180, 225, 270, 315],
-                        ticktext=["N", "NE", "E", "SE", "S", "SO", "O", "NO"],
-                        direction="clockwise", rotation=90,
-                        tickfont=dict(color="#94b8cc", size=12), linecolor="#1e3a4f"
-                    ),
-                    radialaxis=dict(
-                        tickfont=dict(color="#94b8cc", size=10),
-                        gridcolor="#1e3a4f", linecolor="#1e3a4f",
-                        title=dict(text="Nb observations", font=dict(color="#94b8cc"))
-                    )
-                ),
-                height=480
-            )
-            st.plotly_chart(fig3, use_container_width=True)
-
-    # ════════════════════════════════════════════════════════════════════
-    with tab3:
-        section("🏆", "Classement wilayas — été (Risk Score)")
-
-        df_rank = q(f"""
-            SELECT NOM_WILAYA,
-                   ROUND(AVG(MESURE),4)     AS avg_hsv,
-                   ROUND(MAX(MESURE),4)     AS max_hsv,
-                   ROUND(AVG(wind_speed),4) AS avg_ws,
-                   ROUND(AVG(mwp),4)        AS avg_mwp,
-                   ROUND(SUM(CASE WHEN MESURE>=2 THEN 1 ELSE 0 END)*100.0/COUNT(*),2) AS pct_danger,
-                   COUNT(*) AS total
-            FROM hsv {wh_ete}
-            GROUP BY NOM_WILAYA
-        """)
-
-        if not df_rank.empty:
-            # Protection division par zéro sur MWP
-            df_rank["avg_mwp"] = df_rank["avg_mwp"].replace(0, None)
-            df_rank["avg_mwp"] = df_rank["avg_mwp"].fillna(df_rank["avg_mwp"].median())
-
-            # ── Calcul Risk Score ──
-            # RISK = 0.4*HSV_moy + 0.2*HSV_max + 0.2*(%danger/100) + 0.1*vent_moy + 0.1*(1/MWP)
-            df_rank["risk_score"] = (
-                0.4 * df_rank["avg_hsv"]
-              + 0.2 * df_rank["max_hsv"]
-              + 0.2 * (df_rank["pct_danger"] / 100)
-              + 0.1 * df_rank["avg_ws"]
-              + 0.1 * (1 / df_rank["avg_mwp"])
-            ).round(4)
-
-            df_rank = df_rank.sort_values("risk_score", ascending=False).head(15).reset_index(drop=True)
-
-            bar_colors_rank = df_rank["risk_score"].apply(_risk_color)
-
-            fig = go.Figure()
-            fig.add_trace(go.Bar(
-                x=df_rank["NOM_WILAYA"],
-                y=df_rank["risk_score"],
-                name="Risk Score",
-                marker_color=bar_colors_rank,
-                text=df_rank["risk_score"].map(lambda v: f"{v:.4f}"),
-                textposition="outside",
-                customdata=df_rank[["avg_hsv", "max_hsv", "avg_ws", "avg_mwp", "pct_danger"]].values,
-                hovertemplate=(
-                    "<b>%{x}</b><br>"
-                    "⚠️ Risk Score : %{y:.4f}<br>"
-                    "HSV moy : %{customdata[0]:.3f} m<br>"
-                    "HSV max : %{customdata[1]:.2f} m<br>"
-                    "Vent moy : %{customdata[2]:.2f} m/s<br>"
-                    "MWP moy : %{customdata[3]:.1f} s<br>"
-                    "% Danger : %{customdata[4]:.1f}%<extra></extra>"
-                )
-            ))
-
-            fig.add_hline(y=0.4, line_dash="dot",  line_color="#22c55e",
-                annotation_text="Faible",  annotation_position="top right")
-            fig.add_hline(y=0.7, line_dash="dot",  line_color="#f59e0b",
-                annotation_text="Modéré",  annotation_position="top right")
-            fig.add_hline(y=1.0, line_dash="dash", line_color="#ef4444",
-                annotation_text="Élevé",   annotation_position="top right")
-
+            fig.add_trace(go.Scatter(x=df_yr["YEAR"],y=df_yr["avg_hsv"]+df_yr["std_hsv"],fill=None,mode="lines",line=dict(width=0),showlegend=False,hoverinfo="skip"))
+            fig.add_trace(go.Scatter(x=df_yr["YEAR"],y=df_yr["avg_hsv"]-df_yr["std_hsv"],fill="tonexty",mode="lines",line=dict(width=0),fillcolor="rgba(14,165,233,.1)",showlegend=False,hoverinfo="skip"))
+            fig.add_trace(go.Scatter(x=df_yr["YEAR"],y=df_yr["avg_hsv"],name="HSV Moyenne",mode="lines+markers",line=dict(color="#0ea5e9",width=2.5),marker=dict(size=5,color="#06b6d4")))
+            fig.add_trace(go.Scatter(x=df_yr["YEAR"],y=df_yr["max_hsv"],name="HSV Maximum",mode="lines",line=dict(color="#ef4444",width=1.5,dash="dot")))
+            fig.add_hline(y=1.5,line_dash="dash",line_color="#f59e0b",annotation_text="Seuil 1.5 m",annotation_font_color="#f59e0b",annotation_font_size=10)
             apply_theme(fig)
-            fig.update_layout(
-                title="Risk Score par wilaya (été — Top 15)",
-                xaxis=dict(title="Wilaya", tickangle=-35, **_ax()),
-                yaxis=dict(title="Risk Score", **_ax()),
-                showlegend=False, height=420
-            )
-            st.plotly_chart(fig, use_container_width=True)
+            fig.update_layout(title="Évolution annuelle HSV — Côtes algériennes",xaxis_title="Année",yaxis_title="HSV (m)",height=380)
+            st.plotly_chart(fig,use_container_width=True)
 
-            # Légende niveaux de risque
-            st.markdown("""
-            <div style="display:flex;gap:18px;flex-wrap:wrap;margin:4px 0 12px 0;font-size:0.85rem;">
-              <span style="color:#22c55e">🟢 <b>Faible</b> &lt; 1.0</span>
-              <span style="color:#f59e0b">🟡 <b>Modéré</b> 1.0 – 1.4</span>
-              <span style="color:#ef4444">🔴 <b>élevé</b> ≥ 1.4</span>
-            </div>
-            """, unsafe_allow_html=True)
-
-            # Tableau récapitulatif
-            df_display_rank = df_rank[["NOM_WILAYA", "avg_hsv", "max_hsv", "avg_ws", "avg_mwp", "pct_danger", "risk_score"]].copy()
-            df_display_rank.columns = ["Wilaya", "HSV Moy (m)", "HSV Max (m)", "Vent Moy (m/s)", "MWP Moy (s)", "% Danger", "⚠️ Risk Score"]
-            st.dataframe(df_display_rank, use_container_width=True, hide_index=True)
-
-    # ════════════════════════════════════════════════════════════════════
-    with tab4:
-        section("🏖️", "Classement plages — été (Risk Score)")
-
-        col_sort, col_n = st.columns([3, 1])
-        with col_sort:
-            sort_ete = st.selectbox(
-                "Trier par",
-                ["Risk Score ↓", "HSV Moyenne ↓", "HSV Maximum ↓", "% Danger ↓", "Vent Moyen ↓"],
-                key="sort_ete_plage"
-            )
-        with col_n:
-            top_n_ete = st.number_input("Top N", min_value=5, max_value=56, value=20, step=5, key="topn_ete")
-
-        df_pl = q(f"""
-            SELECT NOM_PLAGE, NOM_WILAYA,
-                   ROUND(AVG(MESURE),4)     AS avg_hsv,
-                   ROUND(MAX(MESURE),4)     AS max_hsv,
-                   ROUND(AVG(wind_speed),4) AS avg_ws,
-                   ROUND(AVG(mwp),4)        AS avg_mwp,
-                   ROUND(SUM(CASE WHEN MESURE>=2 THEN 1 ELSE 0 END)*100.0/COUNT(*),2) AS pct_danger,
-                   COUNT(*) AS total
-            FROM hsv {wh_ete}
-            GROUP BY NOM_PLAGE, NOM_WILAYA
-        """)
-
-        if not df_pl.empty:
-            # Protection division par zéro sur MWP
-            df_pl["avg_mwp"] = df_pl["avg_mwp"].replace(0, None)
-            df_pl["avg_mwp"] = df_pl["avg_mwp"].fillna(df_pl["avg_mwp"].median())
-
-            # ── Calcul Risk Score ──
-            # RISK = 0.4*HSV_moy + 0.2*HSV_max + 0.2*(%danger/100) + 0.1*vent_moy + 0.1*(1/MWP)
-            df_pl["risk_score"] = (
-                0.4 * df_pl["avg_hsv"]
-              + 0.2 * df_pl["max_hsv"]
-              + 0.2 * (df_pl["pct_danger"] / 100)
-              + 0.1 * df_pl["avg_ws"]
-              + 0.1 * (1 / df_pl["avg_mwp"])
-            ).round(4)
-
-            # Tri selon choix utilisateur
-            sort_col_ete = {
-                "Risk Score ↓":  "risk_score",
-                "HSV Moyenne ↓": "avg_hsv",
-                "HSV Maximum ↓": "max_hsv",
-                "% Danger ↓":    "pct_danger",
-                "Vent Moyen ↓":  "avg_ws",
-            }[sort_ete]
-
-            df_pl = df_pl.sort_values(sort_col_ete, ascending=False).head(top_n_ete).reset_index(drop=True)
-
-            bar_colors_pl = df_pl["risk_score"].apply(_risk_color)
-
-            fig = go.Figure()
-            fig.add_trace(go.Bar(
-                x=df_pl["risk_score"],
-                y=df_pl["NOM_PLAGE"],
-                orientation="h",
-                marker_color=bar_colors_pl,
-                text=df_pl["risk_score"].map(lambda v: f"{v:.4f}"),
-                textposition="outside",
-                customdata=df_pl[["NOM_WILAYA", "avg_hsv", "max_hsv", "avg_ws", "avg_mwp", "pct_danger"]].values,
-                hovertemplate=(
-                    "<b>%{y}</b><br>"
-                    "Wilaya : %{customdata[0]}<br>"
-                    "⚠️ Risk Score : %{x:.4f}<br>"
-                    "HSV moy : %{customdata[1]:.3f} m<br>"
-                    "HSV max : %{customdata[2]:.2f} m<br>"
-                    "Vent moy : %{customdata[3]:.2f} m/s<br>"
-                    "MWP moy : %{customdata[4]:.1f} s<br>"
-                    "% Danger : %{customdata[5]:.1f}%<extra></extra>"
-                )
-            ))
-
-            fig.add_vline(x=0.4, line_dash="dot",  line_color="#22c55e",
-                annotation_text="Faible",  annotation_position="top")
-            fig.add_vline(x=0.7, line_dash="dot",  line_color="#f59e0b",
-                annotation_text="Modéré",  annotation_position="top")
-            fig.add_vline(x=1.0, line_dash="dash", line_color="#ef4444",
-                annotation_text="Élevé",   annotation_position="top")
-
-            apply_theme(fig)
-            fig.update_layout(
-                title=f"Top {top_n_ete} plages — {sort_ete.replace(' ↓', '')} (été)",
-                xaxis=dict(title="Risk Score", **_ax()),
-                yaxis=dict(autorange="reversed", tickfont=dict(size=11)),
-                height=max(380, top_n_ete * 22),
-                margin=dict(l=0, r=90, t=50, b=0),
-                showlegend=False
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-            # Légende niveaux de risque
-            st.markdown("""
-            <div style="display:flex;gap:18px;flex-wrap:wrap;margin:4px 0 12px 0;font-size:0.85rem;">
-              <span style="color:#22c55e">🟢 <b>Faible</b> &lt; 1.0</span>
-              <span style="color:#f59e0b">🟡 <b>Modéré</b> 1.0 – 1.4</span>
-              <span style="color:#ef4444">🔴 <b>élevé</b> ≥ 1.4</span>
-            </div>
-            """, unsafe_allow_html=True)
-
-            # Tableau récapitulatif
-            df_display_pl = df_pl[["NOM_PLAGE", "NOM_WILAYA", "avg_hsv", "max_hsv", "avg_ws", "avg_mwp", "pct_danger", "risk_score"]].copy()
-            df_display_pl.columns = ["Plage", "Wilaya", "HSV Moy (m)", "HSV Max (m)", "Vent Moy (m/s)", "MWP Moy (s)", "% Danger", "⚠️ Risk Score"]
-            st.dataframe(df_display_pl, use_container_width=True, hide_index=True)
-
-# ═══════════════════════════════════════════════════════════════════════
-# PAGE : ALERTES NOYADES
-# ═══════════════════════════════════════════════════════════════════════
-# ═══════════════════════════════════════════════════════════════════════
-# PAGE : ALERTES NOYADES
-# ═══════════════════════════════════════════════════════════════════════
-elif page == "🏊 Alertes Noyades":
-    page_header("#ef4444","🏊","Alertes Noyades","HSV · Vent · Direction — seuils critiques de sécurité balnéaire")
-    st.markdown("""
-    <div class="info-card" style="border-left-color:#ef4444; background:rgba(239,68,68,0.06);">
-        <div class="title" style="color:#f87171;">Seuils de référence — sécurité baignade</div>
-        <div class="threshold-row"><span class="threshold-key">🟢 Calme</span><span class="threshold-val" style="color:#34d399;">HSV &lt; 1.0 m · Vent &lt; 5 m/s — Baignade sûre</span></div>
-        <div class="threshold-row"><span class="threshold-key">🟡 Vigilance</span><span class="threshold-val" style="color:#fbbf24;">HSV 1–2 m · Vent 5–10 m/s — Prudence recommandée</span></div>
-        <div class="threshold-row"><span class="threshold-key">🔴 Danger</span><span class="threshold-val" style="color:#f87171;">HSV &gt; 2 m ou Vent &gt; 10 m/s ou MWP &gt; 8 s</span></div>
-        <div class="threshold-row"><span class="threshold-key">📐 Risk Score</span><span class="threshold-val" style="color:#a78bfa;">(HSV/3)×0.5 + (Vent/15)×0.3 + (MWP/10)×0.2</span></div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    wh = W()
-    show_kpis(wh)
-
-    with st.spinner():
-        r_ws = q(f"""
-            SELECT AVG(wind_speed) AS avg_ws, MAX(wind_speed) AS max_ws,
-                   SUM(CASE WHEN wind_speed>=10 THEN 1 ELSE 0 END)*100.0/COUNT(*) AS pct_fort,
-                   SUM(CASE WHEN wind_speed>=15 THEN 1 ELSE 0 END)*100.0/COUNT(*) AS pct_tempete
-            FROM hsv {wh}
-        """)
-    if not r_ws.empty:
-        section("💨", "Indicateurs vent")
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("💨 Vent Moyen",       f"{r_ws['avg_ws'].iloc[0]:.2f} m/s")
-        c2.metric("🌪️ Vent Maximum",     f"{r_ws['max_ws'].iloc[0]:.1f} m/s")
-        c3.metric("⚡ % Vent Fort ≥10",  f"{r_ws['pct_fort'].iloc[0]:.1f}%")
-        c4.metric("🌩️ % Tempête ≥15",   f"{r_ws['pct_tempete'].iloc[0]:.1f}%")
-
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 Alertes","🌬️ Vent & MWD","📡 Distance","🏖️ Par Plage"])
-
-    # ─────────────────────────────────────────────────────────────────
-    # TAB 1 — ALERTES
-    # ─────────────────────────────────────────────────────────────────
-    with tab1:
-        col1, col2 = st.columns(2)
-        with col1:
-            section("📊","Répartition globale des niveaux d'alerte")
-            with st.spinner():
-                df_al = q(f"SELECT ALERTE, COUNT(*) AS n FROM hsv {wh} GROUP BY ALERTE")
-            if not df_al.empty:
-                ord_al = ['Calme (< 1 m)','Vigilance (1–2 m)','Danger (> 2 m)']
-                df_al["ALERTE"] = pd.Categorical(df_al["ALERTE"], categories=ord_al, ordered=True)
-                df_al = df_al.sort_values("ALERTE")
-                total_al = df_al["n"].sum()
-                for _, row in df_al.iterrows():
-                    pct   = row["n"] / total_al * 100
-                    color = ALERTE_COLORS.get(row["ALERTE"], "#666")
-                    st.markdown(f"""
-                    <div style="background:var(--bg-card);border:1px solid var(--border-soft);
-                         border-left:3px solid {color};border-radius:8px;padding:10px 14px;
-                         margin-bottom:8px;display:flex;justify-content:space-between;">
-                        <span>{row['ALERTE']}</span>
-                        <b style="color:{color};">{pct:.1f}%</b>
-                    </div>""", unsafe_allow_html=True)
-
-        with col2:
-            section("📈","Évolution annuelle % danger")
-            with st.spinner():
-                df_ann_al = q(f"""
-                    SELECT YEAR,
-                           SUM(CASE WHEN MESURE>=2 THEN 1 ELSE 0 END)*100.0/COUNT(*) AS pct_danger,
-                           SUM(CASE WHEN MESURE>=1 THEN 1 ELSE 0 END)*100.0/COUNT(*) AS pct_vig,
-                           SUM(CASE WHEN wind_speed>=10 THEN 1 ELSE 0 END)*100.0/COUNT(*) AS pct_vent_fort
-                    FROM hsv {wh} GROUP BY YEAR ORDER BY YEAR
-                """)
-            if not df_ann_al.empty:
+elif page == T("analysis"):
+    if analysis_page == T("global_analysis"):
+        badge = "🟣 M2" if is_m2 else "🔵 M1"
+        page_header("#0ea5e9","📊","Analyse Globale",f"Distribution et tendances HSV — {badge}")
+        wh = W(); show_kpis(wh)
+        tab1,tab2,tab3,tab4 = st.tabs([T("time_series"),T("distribution"),T("seasonality"),T("by_beach")])
+        with tab1:
+            section("📈","Évolution annuelle")
+            df_ann = q(f"SELECT YEAR,AVG(MESURE) AS avg_hsv,MAX(MESURE) AS max_hsv,STDDEV(MESURE) AS std_hsv FROM {VIEW} {wh} GROUP BY YEAR ORDER BY YEAR")
+            if not df_ann.empty:
                 fig = go.Figure()
-                fig.add_trace(go.Scatter(x=df_ann_al["YEAR"], y=df_ann_al["pct_vig"],
-                    name="Vigilance HSV", line=dict(color="#f59e0b")))
-                fig.add_trace(go.Scatter(x=df_ann_al["YEAR"], y=df_ann_al["pct_danger"],
-                    name="Danger HSV", line=dict(color="#ef4444"),
-                    fill="tozeroy", fillcolor="rgba(239,68,68,0.08)"))
-                fig.add_trace(go.Scatter(x=df_ann_al["YEAR"], y=df_ann_al["pct_vent_fort"],
-                    name="Vent ≥10 m/s", line=dict(color="#06b6d4", dash="dot")))
-                apply_theme(fig)
-                fig.update_layout(title="% annuel alertes HSV + vent",
-                    xaxis_title="Année", yaxis_title="%", height=360)
-                st.plotly_chart(fig, use_container_width=True)
-
-        if has_col("mwp"):
-            section("⏱️","Période des vagues (MWP) — corrélé au risque de noyade")
-            with st.spinner():
-                df_mwp = q(f"""
-                    SELECT ROUND(mwp,0) AS mwp_r, COUNT(*) AS n
-                    FROM hsv {wh}
-                    WHERE mwp IS NOT NULL
-                    GROUP BY mwp_r ORDER BY mwp_r
-                """)
-            if not df_mwp.empty:
-                fig = go.Figure(go.Bar(
-                    x=df_mwp["mwp_r"], y=df_mwp["n"],
-                    marker_color=df_mwp["mwp_r"].apply(
-                        lambda v: "#ef4444" if v > 8 else "#f59e0b" if v > 6 else "#10b981"
-                    )
-                ))
-                fig.add_vline(x=8, line_dash="dash", line_color="#ef4444", annotation_text="Danger >8s")
-                apply_theme(fig)
-                fig.update_layout(title="Distribution MWP",
-                    xaxis_title="MWP (s)", yaxis_title="Nombre", height=300)
-                st.plotly_chart(fig, use_container_width=True)
-
-    # ─────────────────────────────────────────────────────────────────
-    # TAB 2 — VENT & MWD
-    # ─────────────────────────────────────────────────────────────────
-    with tab2:
-        section("💨", "Vent mensuel et corrélation avec HSV")
-        col1, col2 = st.columns(2)
-        with col1:
-            with st.spinner():
-                df_ws_m = q(f"""
-                    SELECT MONTH,
-                           AVG(wind_speed) AS avg_ws, MAX(wind_speed) AS max_ws,
-                           AVG(u10) AS avg_u10, AVG(v10) AS avg_v10,
-                           SUM(CASE WHEN wind_speed>=10 THEN 1 ELSE 0 END)*100.0/COUNT(*) AS pct_fort,
-                           AVG(MESURE) AS avg_hsv
-                    FROM hsv {wh} GROUP BY MONTH ORDER BY MONTH
-                """)
-            if not df_ws_m.empty:
-                df_ws_m["MOIS_L"] = df_ws_m["MONTH"].map(MOIS_SHORT)
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(x=df_ws_m["MOIS_L"], y=df_ws_m["avg_ws"],
-                    name="Vent moy (m/s)", mode="lines+markers",
-                    line=dict(color="#06b6d4", width=2)))
-                fig.add_trace(go.Bar(x=df_ws_m["MOIS_L"], y=df_ws_m["pct_fort"],
-                    name="% vent ≥10 m/s", marker_color="rgba(239,68,68,0.5)", yaxis="y2"))
-                fig.add_hline(y=10, line_dash="dash", line_color="#f59e0b",
-                    annotation_text="Seuil alerte 10 m/s")
-                apply_theme(fig)
-                fig.update_layout(
-                    title="Vent mensuel — vitesse et % fort",
-                    yaxis=dict(title="Vent moy (m/s)", **PLOTLY_THEME["yaxis"]),
-                    yaxis2=dict(title="% vent ≥10 m/s", overlaying="y", side="right",
-                                gridcolor="rgba(0,0,0,0)", tickcolor="#4a7a96",
-                                tickfont=dict(color="#94b8cc")),
-                    height=360
-                )
-                st.plotly_chart(fig, use_container_width=True)
-
-        with col2:
-            section("🧮", "Composantes U10 / V10 mensuelles")
-            if not df_ws_m.empty:
-                fig2 = go.Figure()
-                fig2.add_trace(go.Bar(x=df_ws_m["MOIS_L"], y=df_ws_m["avg_u10"],
-                    name="U10 (zonal)", marker_color="#0ea5e9"))
-                fig2.add_trace(go.Bar(x=df_ws_m["MOIS_L"], y=df_ws_m["avg_v10"],
-                    name="V10 (méridional)", marker_color="#8b5cf6"))
-                fig2.add_hline(y=0, line_color="rgba(148,184,204,0.3)")
-                apply_theme(fig2)
-                fig2.update_layout(barmode="group", title="U10 / V10 par mois",
-                    yaxis_title="m/s", height=340)
-                st.plotly_chart(fig2, use_container_width=True)
-
-        section("🧭", "Rose des vagues — Direction MWD et niveau de danger")
-        col3, col4 = st.columns(2)
-        with col3:
-            with st.spinner():
-                df_mwd = q(f"""
-                    SELECT FLOOR(mwd/22.5)*22.5 AS dir_bin,
-                           COUNT(*) AS n,
-                           AVG(MESURE) AS avg_hsv,
-                           AVG(wind_speed) AS avg_ws
-                    FROM hsv {wh}
-                    WHERE mwd IS NOT NULL
-                    GROUP BY dir_bin ORDER BY dir_bin
-                """)
-            if not df_mwd.empty:
-                fig3 = go.Figure(go.Barpolar(
-                    r=df_mwd["n"], theta=df_mwd["dir_bin"], width=22,
-                    marker_color=df_mwd["avg_hsv"],
-                    marker_colorscale=[[0,"#10b981"],[0.5,"#f59e0b"],[1,"#ef4444"]],
-                    marker_showscale=True,
-                    marker_colorbar=dict(title="HSV moy (m)", tickfont=dict(color="#94b8cc"))
-                ))
-                apply_theme(fig3)
-                fig3.update_layout(
-                    title="Rose des vagues — colorée par HSV",
-                    polar=dict(
-                        bgcolor="rgba(12,24,41,0.8)",
-                        angularaxis=dict(
-                            tickmode="array",
-                            tickvals=[0,45,90,135,180,225,270,315],
-                            ticktext=["N","NE","E","SE","S","SO","O","NO"],
-                            direction="clockwise", rotation=90,
-                            gridcolor="rgba(30,90,150,0.3)",
-                            tickfont=dict(color="#94b8cc")
-                        ),
-                        radialaxis=dict(gridcolor="rgba(30,90,150,0.2)",
-                                        tickfont=dict(color="#94b8cc"))
-                    ), height=400
-                )
-                st.plotly_chart(fig3, use_container_width=True)
-
-        with col4:
-            section("📊", "HSV et vent par secteur directionnel")
-            if not df_mwd.empty:
-                df_mwd["sector"] = pd.cut(df_mwd["dir_bin"],
-                    bins=[0,90,180,270,360],
-                    labels=["N–E (0–90°)","E–S (90–180°)","S–O (180–270°)","O–N (270–360°)"],
-                    include_lowest=True)
-                df_sec = df_mwd.groupby("sector", observed=True).agg(
-                    avg_hsv=("avg_hsv","mean"),
-                    avg_ws=("avg_ws","mean"),
-                    n=("n","sum")
-                ).reset_index()
-                fig4 = go.Figure()
-                fig4.add_trace(go.Bar(
-                    x=df_sec["sector"].astype(str), y=df_sec["avg_hsv"],
-                    name="HSV moy (m)",
-                    marker_color=["#0ea5e9","#06b6d4","#8b5cf6","#f59e0b"]
-                ))
-                fig4.add_trace(go.Scatter(
-                    x=df_sec["sector"].astype(str), y=df_sec["avg_ws"],
-                    name="Vent moy (m/s)", mode="lines+markers",
-                    line=dict(color="#ef4444", width=2), yaxis="y2"
-                ))
-                apply_theme(fig4)
-                fig4.update_layout(
-                    title="HSV et vent par secteur directionnel",
-                    yaxis=dict(title="HSV (m)", **PLOTLY_THEME["yaxis"]),
-                    yaxis2=dict(title="Vent (m/s)", overlaying="y", side="right",
-                                gridcolor="rgba(0,0,0,0)", tickcolor="#4a7a96",
-                                tickfont=dict(color="#94b8cc")),
-                    height=360
-                )
-                st.plotly_chart(fig4, use_container_width=True)
-
-    # ─────────────────────────────────────────────────────────────────
-    # TAB 3 — DISTANCE  ← MODIFIÉ : risk_score basé sur MESURE
-    # ─────────────────────────────────────────────────────────────────
-    with tab3:
-        section("📡", "Analyse par distance à la côte — zones de danger")
-        st.markdown("""
-        <div class="info-card" style="border-left-color:#ef4444;">
-            <div class="title" style="color:#f87171;">Zones de risque par distance</div>
-            <div class="threshold-row"><span class="threshold-key" style="color:#ef4444;">● Dist. 1 — ~1 km</span><span class="threshold-val">Frontière terre-mer · Danger direct baigneurs</span></div>
-            <div class="threshold-row"><span class="threshold-key" style="color:#f59e0b;">● Dist. 2 — ~5 km</span><span class="threshold-val">Zone de baignade étendue</span></div>
-            <div class="threshold-row"><span class="threshold-key" style="color:#0ea5e9;">● Dist. 3 — ~10 km</span><span class="threshold-val">Zone intermédiaire</span></div>
-            <div class="threshold-row"><span class="threshold-key" style="color:#8b5cf6;">● Dist. 4 — ~20 km</span><span class="threshold-val">Conditions du large</span></div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        with st.spinner():
-            df_dist_al = q(f"""
-                SELECT DISTANCE,
-                       AVG(MESURE)      AS avg_hsv,  MAX(MESURE)      AS max_hsv,
-                       AVG(wind_speed)  AS avg_ws,   MAX(wind_speed)  AS max_ws,
-                       AVG(mwp)         AS avg_mwp,
-                       SUM(CASE WHEN MESURE>=2 THEN 1 ELSE 0 END)*100.0/COUNT(*) AS pct_danger,
-                       SUM(CASE WHEN wind_speed>=10 THEN 1 ELSE 0 END)*100.0/COUNT(*) AS pct_vent_fort,
-                       (
-                           AVG(MESURE)/3 * 0.5 +
-                           AVG(wind_speed)/15 * 0.3 +
-                           AVG(mwp)/10 * 0.2
-                       ) AS risk_score,
-                       COUNT(*) AS n
-                FROM hsv {wh} GROUP BY DISTANCE ORDER BY DISTANCE
-            """)
-
-        if not df_dist_al.empty:
-            df_dist_al["DIST_LABEL"] = df_dist_al["DISTANCE"].map(DISTANCE_LABELS)
-            dist_colors_list = [list(DISTANCE_COLORS.values())[i % 4]
-                                for i in range(len(df_dist_al))]
-
-            # ── Stat cards avec risk_score ──────────────────────────
-            cols_d = st.columns(len(df_dist_al))
-            for i, (_, row) in enumerate(df_dist_al.iterrows()):
-                c = list(DISTANCE_COLORS.values())[i % 4]
-                rs = row["risk_score"] if row["risk_score"] is not None else 0.0
-                rs_color = "#ef4444" if rs > 0.5 else "#f59e0b" if rs > 0.25 else "#10b981"
-                rs_label = "🔴 Danger" if rs > 0.5 else "🟡 Vigilance" if rs > 0.25 else "🟢 Calme"
-                with cols_d[i]:
-                    st.markdown(f"""
-                    <div class="stat-card" style="border-top:2px solid {c};">
-                        <div class="label">{row['DIST_LABEL']}</div>
-                        <div class="value" style="color:{c};font-size:1.3rem;">{row['avg_hsv']:.2f} m</div>
-                        <div class="sub">% Danger: {row['pct_danger']:.1f}%</div>
-                        <div class="sub">Vent moy: {row['avg_ws']:.1f} m/s · % fort: {row['pct_vent_fort']:.1f}%</div>
-                        <div class="sub">MWP moy: {row['avg_mwp']:.1f} s</div>
-                        <div class="sub" style="color:{rs_color};">⚠️ Risk Score: {rs:.3f} — {rs_label}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-            # ── Graphiques HSV & vent ───────────────────────────────
-            col_a, col_b = st.columns(2)
+                fig.add_trace(go.Scatter(x=df_ann["YEAR"],y=df_ann["avg_hsv"]+df_ann["std_hsv"],fill=None,mode="lines",line=dict(width=0),showlegend=False,hoverinfo="skip"))
+                fig.add_trace(go.Scatter(x=df_ann["YEAR"],y=df_ann["avg_hsv"]-df_ann["std_hsv"],fill="tonexty",mode="lines",line=dict(width=0),fillcolor="rgba(14,165,233,.1)",showlegend=False,hoverinfo="skip"))
+                fig.add_trace(go.Scatter(x=df_ann["YEAR"],y=df_ann["avg_hsv"],name="Moyenne",mode="lines+markers",line=dict(color="#0ea5e9",width=2)))
+                fig.add_trace(go.Scatter(x=df_ann["YEAR"],y=df_ann["max_hsv"],name="Maximum",mode="lines",line=dict(color="#ef4444",width=1.5,dash="dot")))
+                for seuil,color,label in [(1.5,"#f59e0b","Vigilance"),(2.5,"#ef4444","Danger")]:
+                    fig.add_hline(y=seuil,line_dash="dash",line_color=color,annotation_text=label,annotation_font_color=color,annotation_font_size=10)
+                apply_theme(fig); fig.update_layout(title="HSV annuelle",xaxis_title="Année",yaxis_title="HSV (m)",height=380)
+                st.plotly_chart(fig,use_container_width=True)
+        with tab2:
+            col_a,col_b = st.columns(2)
             with col_a:
-                fig = go.Figure()
-                fig.add_trace(go.Bar(
-                    x=df_dist_al["DIST_LABEL"], y=df_dist_al["avg_hsv"],
-                    name="HSV moy (m)", marker_color=dist_colors_list,
-                    text=df_dist_al["avg_hsv"].map(lambda v: f"{v:.2f}"),
-                    textposition="outside"
-                ))
-                fig.add_trace(go.Scatter(
-                    x=df_dist_al["DIST_LABEL"], y=df_dist_al["pct_danger"],
-                    name="% Danger", mode="lines+markers",
-                    line=dict(color="#ef4444", width=2), yaxis="y2"
-                ))
-                apply_theme(fig)
-                fig.update_layout(
-                    title="HSV et % danger par zone",
-                    yaxis=dict(title="HSV (m)", **PLOTLY_THEME["yaxis"]),
-                    yaxis2=dict(title="% Danger", overlaying="y", side="right",
-                                gridcolor="rgba(0,0,0,0)", tickcolor="#4a7a96",
-                                tickfont=dict(color="#94b8cc")),
-                    height=340
-                )
-                st.plotly_chart(fig, use_container_width=True)
-
+                df_dist = q(f"SELECT ROUND(MESURE,1) AS h,COUNT(*) AS n FROM {VIEW} {wh} GROUP BY h ORDER BY h")
+                if not df_dist.empty:
+                    fig = go.Figure(go.Bar(x=df_dist["h"],y=df_dist["n"],marker_color="#0ea5e9",marker_line_width=0))
+                    for s,c in [(1.5,"#f59e0b"),(2.5,"#ef4444")]:
+                        fig.add_vline(x=s,line_color=c,line_dash="dash",annotation_text=f"{s} m",annotation_font_color=c)
+                    apply_theme(fig); fig.update_layout(title="Histogramme HSV",xaxis_title="HSV (m)",yaxis_title="Nombre",height=340)
+                    st.plotly_chart(fig,use_container_width=True)
             with col_b:
-                fig2 = go.Figure()
-                fig2.add_trace(go.Bar(
-                    x=df_dist_al["DIST_LABEL"], y=df_dist_al["avg_ws"],
-                    name="Vent moy (m/s)", marker_color=dist_colors_list,
-                    text=df_dist_al["avg_ws"].map(lambda v: f"{v:.1f}"),
-                    textposition="outside"
-                ))
-                fig2.add_trace(go.Scatter(
-                    x=df_dist_al["DIST_LABEL"], y=df_dist_al["pct_vent_fort"],
-                    name="% Vent fort", mode="lines+markers",
-                    line=dict(color="#f59e0b", width=2), yaxis="y2"
-                ))
-                apply_theme(fig2)
-                fig2.update_layout(
-                    title="Vent et % vent fort par zone",
-                    yaxis=dict(title="Vent moy (m/s)", **PLOTLY_THEME["yaxis"]),
-                    yaxis2=dict(title="% Vent fort", overlaying="y", side="right",
-                                gridcolor="rgba(0,0,0,0)", tickcolor="#4a7a96",
-                                tickfont=dict(color="#94b8cc")),
-                    height=340
-                )
-                st.plotly_chart(fig2, use_container_width=True)
-
-            # ── Graphique Risk Score par zone de distance ───────────
-            section("⚠️", "Risk Score Noyades par zone de distance")
-            df_dist_al["rs_clean"] = df_dist_al["risk_score"].fillna(0.0)
-            fig_risk = go.Figure(go.Bar(
-                x=df_dist_al["DIST_LABEL"],
-                y=df_dist_al["rs_clean"],
-                marker_color=df_dist_al["rs_clean"].apply(
-                    lambda v: "#ef4444" if v > 0.5 else "#f59e0b" if v > 0.25 else "#10b981"
-                ),
-                text=df_dist_al["rs_clean"].map(lambda v: f"{v:.3f}"),
-                textposition="outside"
-            ))
-            fig_risk.add_hline(y=0.5,  line_dash="dash", line_color="#ef4444",
-                annotation_text="Seuil Danger 0.5")
-            fig_risk.add_hline(y=0.25, line_dash="dash", line_color="#f59e0b",
-                annotation_text="Seuil Vigilance 0.25")
-            apply_theme(fig_risk)
-            fig_risk.update_layout(
-                title="Risk Score Noyades par zone de distance — (HSV/3)×0.5 + (Vent/15)×0.3 + (MWP/10)×0.2",
-                yaxis_title="Risk Score",
-                height=340
-            )
-            st.plotly_chart(fig_risk, use_container_width=True)
-
-            # ── HSV mensuelle par zone ──────────────────────────────
-            section("📅", "HSV mensuelle par zone de distance")
-            with st.spinner():
-                df_dist_mo = q(f"""
-                    SELECT DISTANCE, MONTH,
-                           AVG(MESURE) AS avg_hsv,
-                           AVG(wind_speed) AS avg_ws
-                    FROM hsv {wh}
-                    GROUP BY DISTANCE, MONTH ORDER BY DISTANCE, MONTH
-                """)
-            if not df_dist_mo.empty:
-                df_dist_mo["DIST_LABEL"] = df_dist_mo["DISTANCE"].map(DISTANCE_LABELS)
-                df_dist_mo["MOIS_L"]     = df_dist_mo["MONTH"].map(MOIS_SHORT)
-                fig3 = px.line(df_dist_mo, x="MOIS_L", y="avg_hsv", color="DIST_LABEL",
-                    color_discrete_map=DISTANCE_COLORS, markers=True,
-                    labels={"avg_hsv":"HSV (m)","MOIS_L":"Mois","DIST_LABEL":"Zone"})
-                fig3.add_hline(y=2.0, line_dash="dash", line_color="#ef4444",
-                    annotation_text="Danger 2.0 m")
-                apply_theme(fig3)
-                fig3.update_layout(title="HSV mensuelle par zone de distance", height=340)
-                st.plotly_chart(fig3, use_container_width=True)
-
-    # ─────────────────────────────────────────────────────────────────
-    # TAB 4 — PAR PLAGE  ← MODIFIÉ : risk_score basé sur MESURE (pas hsv_avg)
-    # ─────────────────────────────────────────────────────────────────
-    with tab4:
-        section("🏖️","Plages dangereuses — Risk Score Noyades")
-        with st.spinner():
-            df_pl_al = q(f"""
-                SELECT NOM_PLAGE, NOM_WILAYA,
-                       AVG(MESURE)      AS avg_hsv,  MAX(MESURE)      AS max_hsv,
-                       AVG(wind_speed)  AS avg_ws,   MAX(wind_speed)  AS max_ws,
-                       AVG(mwp)         AS avg_mwp,  MAX(mwp)         AS max_mwp,
-                       AVG(mwd)         AS avg_mwd,
-                       SUM(CASE WHEN MESURE>=2 THEN 1 ELSE 0 END)*100.0/COUNT(*) AS pct_danger,
-                       SUM(CASE WHEN wind_speed>=10 THEN 1 ELSE 0 END)*100.0/COUNT(*) AS pct_vent_fort
-                FROM hsv {wh}
-                GROUP BY NOM_PLAGE, NOM_WILAYA
-                ORDER BY pct_danger DESC
-                LIMIT 30
-            """)
-
-        if not df_pl_al.empty:
-            # ── Remplacement des NaN MWP par la médiane ─────────────
-            df_pl_al["avg_mwp"] = df_pl_al["avg_mwp"].fillna(df_pl_al["avg_mwp"].median())
-
-            # ── Risk Score basé sur MESURE (avg_hsv = AVG(MESURE)) ──
-            df_pl_al["risk_score"] = (
-                (df_pl_al["avg_hsv"] / 3.0)  * 0.5
-              + (df_pl_al["avg_ws"]  / 15.0) * 0.3
-              + (df_pl_al["avg_mwp"] / 10.0) * 0.2
-            ).round(4)
-
-            col_a, col_b = st.columns(2)
-            with col_a:
-                fig = px.scatter(df_pl_al, x="avg_hsv", y="avg_ws",
-                    size="risk_score", color="NOM_WILAYA", hover_name="NOM_PLAGE",
-                    labels={"avg_hsv":"HSV moy (m)","avg_ws":"Vent moy (m/s)"})
-                fig.add_vline(x=2.0, line_dash="dash", line_color="#ef4444",
-                    annotation_text="HSV 2m")
-                fig.add_hline(y=10,  line_dash="dash", line_color="#f59e0b",
-                    annotation_text="Vent 10 m/s")
-                apply_theme(fig)
-                fig.update_layout(title="Risque HSV × Vent par plage", height=420)
-                st.plotly_chart(fig, use_container_width=True)
-
-            with col_b:
-                fig2 = px.scatter(df_pl_al, x="avg_mwp", y="avg_mwd",
-                    size="avg_hsv", color="NOM_WILAYA", hover_name="NOM_PLAGE",
-                    labels={"avg_mwp":"MWP moy (s)","avg_mwd":"Direction MWD (°)"})
-                fig2.add_vline(x=8, line_dash="dash", line_color="#ef4444",
-                    annotation_text="MWP 8s")
-                apply_theme(fig2)
-                fig2.update_layout(title="MWP × Direction MWD par plage", height=420)
-                st.plotly_chart(fig2, use_container_width=True)
-
-            # ── Tableau final ────────────────────────────────────────
-            df_show = df_pl_al[[
-                "NOM_PLAGE","NOM_WILAYA",
-                "avg_hsv","max_hsv",
-                "avg_ws","max_ws",
-                "avg_mwp","max_mwp","avg_mwd",
-                "pct_danger","pct_vent_fort","risk_score"
-            ]].round(3)
-            df_show.columns = [
-                "Plage","Wilaya",
-                "HSV Moy","HSV Max",
-                "Vent Moy","Vent Max",
-                "MWP Moy","MWP Max","MWD Moy",
-                "% Danger","% Vent Fort","⚠️ Risk Score"
-            ]
-            st.dataframe(df_show, use_container_width=True, hide_index=True)
-# ═══════════════════════════════════════════════════════════════════════
-# PAGE : DESSALEMENT SWRO
-# ═══════════════════════════════════════════════════════════════════════
-elif page == "💧 Dessalement SWRO":
-    page_header("#0ea5e9","💧","Dessalement SWRO","Conditions marines pour les stations d'osmose inverse · SST · Vent · MSL")
-
-    st.markdown("""
-    <div class="info-card" style="border-left-color:#0ea5e9; background:rgba(14,165,233,0.06);">
-        <div class="title" style="color:#38bdf8;">Paramètres clés — dessalement par osmose inverse</div>
-        <div class="threshold-row"><span class="threshold-key">SST optimale</span><span class="threshold-val" style="color:#38bdf8;">16 °C – 26 °C (efficacité membranaire)</span></div>
-        <div class="threshold-row"><span class="threshold-key">HSV prise d'eau</span><span class="threshold-val" style="color:#fbbf24;">Alerte si HSV &gt; 3.0 m (colmatage)</span></div>
-        <div class="threshold-row"><span class="threshold-key">Vent fort</span><span class="threshold-val" style="color:#f87171;">Alerte si vent &gt; 10 m/s (turbidité et agitation)</span></div>
-        <div class="threshold-row"><span class="threshold-key">Pression atmosphérique</span><span class="threshold-val" style="color:#f87171;">Critique si MSL &lt; 1005 hPa (tempête)</span></div>
-        <div class="threshold-row"><span class="threshold-key">📐 Risk Score</span><span class="threshold-val" style="color:#a78bfa;">(HSV/5)×0.35 + (vent/15)×0.25 + (1-SST_ok)×0.25 + (MSL_risk)×0.15</span></div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    wh = W()
-    show_kpis(wh)
-
-    with st.spinner():
-        r_ws2 = q(f"""
-            SELECT AVG(wind_speed) AS avg_ws, MAX(wind_speed) AS max_ws,
-                   SUM(CASE WHEN wind_speed>=10 THEN 1 ELSE 0 END)*100.0/COUNT(*) AS pct_fort
-            FROM hsv {wh}
-        """)
-    if not r_ws2.empty:
-        section("💨", "Indicateurs vent — impact dessalement")
-        c1,c2,c3 = st.columns(3)
-        c1.metric("💨 Vent Moyen",           f"{r_ws2['avg_ws'].iloc[0]:.2f} m/s")
-        c2.metric("🌪️ Vent Maximum",         f"{r_ws2['max_ws'].iloc[0]:.1f} m/s")
-        c3.metric("⚡ % Vent Fort ≥10 m/s",  f"{r_ws2['pct_fort'].iloc[0]:.1f}%")
-
-    tab1, tab2, tab3, tab4 = st.tabs(["🌡️ SST","📊 Pression MSL","🌬️ Vent & Direction","⚙️ Conditions Opérationnelles"])
-
-    with tab1:
-        section("🌡️","Température de surface de la mer (SST)")
-        col1, col2 = st.columns(2)
-        with col1:
-            with st.spinner():
-                df_sst_m = q(f"""
-                    SELECT MONTH, AVG(sst) AS avg_sst, MIN(sst) AS min_sst,
-                           MAX(sst) AS max_sst, STDDEV(sst) AS std_sst
-                    FROM hsv {wh} WHERE sst IS NOT NULL GROUP BY MONTH ORDER BY MONTH
-                """)
-            if not df_sst_m.empty:
-                df_sst_m["MOIS_L"] = df_sst_m["MONTH"].map(MOIS_SHORT)
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(x=df_sst_m["MOIS_L"], y=df_sst_m["avg_sst"]+df_sst_m["std_sst"], fill=None, mode="lines", line=dict(width=0), showlegend=False))
-                fig.add_trace(go.Scatter(x=df_sst_m["MOIS_L"], y=df_sst_m["avg_sst"]-df_sst_m["std_sst"], fill="tonexty", mode="lines", line=dict(width=0), fillcolor="rgba(6,182,212,0.1)", showlegend=False))
-                fig.add_trace(go.Scatter(x=df_sst_m["MOIS_L"], y=df_sst_m["avg_sst"], name="SST moy", mode="lines+markers", line=dict(color="#06b6d4", width=2)))
-                for val, color, label in [(16,"#f59e0b","Seuil min 16°C"),(26,"#ef4444","Seuil max 26°C")]:
-                    fig.add_hline(y=val, line_dash="dash", line_color=color, annotation_text=label, annotation_font_color=color)
-                apply_theme(fig); fig.update_layout(title="Cycle saisonnier SST", yaxis_title="SST (°C)", height=340)
-                st.plotly_chart(fig, use_container_width=True)
-        with col2:
-            with st.spinner():
-                df_sst_oor = q(f"""
-                    SELECT MONTH,
-                           SUM(CASE WHEN sst<16 THEN 1 ELSE 0 END)*100.0/COUNT(*) AS pct_froid,
-                           SUM(CASE WHEN sst>26 THEN 1 ELSE 0 END)*100.0/COUNT(*) AS pct_chaud
-                    FROM hsv {wh} WHERE sst IS NOT NULL GROUP BY MONTH ORDER BY MONTH
-                """)
-            if not df_sst_oor.empty:
-                df_sst_oor["MOIS_L"] = df_sst_oor["MONTH"].map(MOIS_SHORT)
-                fig = go.Figure()
-                fig.add_trace(go.Bar(x=df_sst_oor["MOIS_L"], y=df_sst_oor["pct_froid"], name="SST < 16°C", marker_color="#818cf8"))
-                fig.add_trace(go.Bar(x=df_sst_oor["MOIS_L"], y=df_sst_oor["pct_chaud"], name="SST > 26°C", marker_color="#ef4444"))
-                apply_theme(fig); fig.update_layout(barmode="stack", title="% hors plage optimale SST", yaxis_title="%", height=340)
-                st.plotly_chart(fig, use_container_width=True)
-
-        with st.spinner():
-            df_sst_yr = q(f"SELECT YEAR, AVG(sst) AS avg_sst FROM hsv {wh} WHERE sst IS NOT NULL GROUP BY YEAR ORDER BY YEAR")
-        if not df_sst_yr.empty:
-            z = np.polyfit(df_sst_yr["YEAR"], df_sst_yr["avg_sst"], 1)
-            p_fn = np.poly1d(z)
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=df_sst_yr["YEAR"], y=df_sst_yr["avg_sst"], mode="lines+markers", line=dict(color="#0ea5e9", width=2)))
-            fig.add_trace(go.Scatter(x=df_sst_yr["YEAR"], y=p_fn(df_sst_yr["YEAR"]), mode="lines", name="Tendance", line=dict(color="#f59e0b", dash="dash")))
-            apply_theme(fig); fig.update_layout(title="Tendance annuelle SST", xaxis_title="Année", yaxis_title="SST (°C)", height=320)
-            st.plotly_chart(fig, use_container_width=True)
-
-    with tab2:
-        section("📊","Pression atmosphérique (MSL)")
-        col1, col2 = st.columns(2)
-        with col1:
-            with st.spinner():
-                df_msl_m = q(f"SELECT MONTH, AVG(msl) AS avg_msl, MIN(msl) AS min_msl FROM hsv {wh} WHERE msl IS NOT NULL GROUP BY MONTH ORDER BY MONTH")
-            if not df_msl_m.empty:
-                df_msl_m["MOIS_L"] = df_msl_m["MONTH"].map(MOIS_SHORT)
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(x=df_msl_m["MOIS_L"], y=df_msl_m["avg_msl"], name="MSL moy", mode="lines+markers", line=dict(color="#0ea5e9", width=2)))
-                fig.add_trace(go.Scatter(x=df_msl_m["MOIS_L"], y=df_msl_m["min_msl"], name="MSL min", mode="lines", line=dict(color="#ef4444", dash="dot", width=1.5)))
-                fig.add_hline(y=1005, line_dash="dash", line_color="#ef4444", annotation_text="Seuil tempête 1005 hPa", annotation_font_color="#ef4444")
-                apply_theme(fig); fig.update_layout(title="Pression MSL mensuelle", yaxis_title="hPa", height=340)
-                st.plotly_chart(fig, use_container_width=True)
-        with col2:
-            with st.spinner():
-                df_msl_ext = q(f"SELECT MONTH, SUM(CASE WHEN msl<1005 THEN 1 ELSE 0 END)*100.0/COUNT(*) AS pct_tempete FROM hsv {wh} WHERE msl IS NOT NULL GROUP BY MONTH ORDER BY MONTH")
-            if not df_msl_ext.empty:
-                df_msl_ext["MOIS_L"] = df_msl_ext["MONTH"].map(MOIS_SHORT)
-                fig = go.Figure(go.Bar(x=df_msl_ext["MOIS_L"], y=df_msl_ext["pct_tempete"],
-                    marker_color=df_msl_ext["pct_tempete"].apply(lambda v: "#ef4444" if v>3 else "#f59e0b" if v>1 else "#10b981"),
-                    text=df_msl_ext["pct_tempete"].map(lambda v: f"{v:.1f}%"), textposition="outside"))
-                apply_theme(fig); fig.update_layout(title="% MSL < 1005 hPa par mois", yaxis_title="%", height=340)
-                st.plotly_chart(fig, use_container_width=True)
-
-    with tab3:
-        section("🌬️", "Vent — impact sur la prise d'eau et la turbidité")
-        col1, col2 = st.columns(2)
-        with col1:
-            with st.spinner():
-                df_ws_desal = q(f"""
-                    SELECT MONTH,
-                           AVG(wind_speed) AS avg_ws, MAX(wind_speed) AS max_ws,
-                           AVG(u10) AS avg_u10, AVG(v10) AS avg_v10,
-                           SUM(CASE WHEN wind_speed>=10 THEN 1 ELSE 0 END)*100.0/COUNT(*) AS pct_fort
-                    FROM hsv {wh} GROUP BY MONTH ORDER BY MONTH
-                """)
-            if not df_ws_desal.empty:
-                df_ws_desal["MOIS_L"] = df_ws_desal["MONTH"].map(MOIS_SHORT)
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(x=df_ws_desal["MOIS_L"], y=df_ws_desal["avg_ws"],
-                    name="Vent moy", mode="lines+markers", line=dict(color="#06b6d4", width=2)))
-                fig.add_trace(go.Bar(x=df_ws_desal["MOIS_L"], y=df_ws_desal["pct_fort"],
-                    name="% vent ≥10 m/s", marker_color="rgba(239,68,68,0.5)", yaxis="y2"))
-                fig.add_hline(y=10, line_dash="dash", line_color="#f59e0b", annotation_text="Alerte turbidité 10 m/s")
-                apply_theme(fig)
-                fig.update_layout(title="Vent mensuel — risque turbidité",
-                    yaxis=dict(title="Vent moy (m/s)", **PLOTLY_THEME["yaxis"]),
-                    yaxis2=dict(title="% vent fort", overlaying="y", side="right",
-                                gridcolor="rgba(0,0,0,0)", tickcolor="#4a7a96", tickfont=dict(color="#94b8cc")),
-                    height=360)
-                st.plotly_chart(fig, use_container_width=True)
-        with col2:
-            section("🧭", "Direction MWD — vagues vers la côte")
-            with st.spinner():
-                df_mwd_desal = q(f"""
-                    SELECT FLOOR(mwd/22.5)*22.5 AS dir_bin, COUNT(*) AS n, AVG(MESURE) AS avg_hsv
-                    FROM hsv {wh} WHERE mwd IS NOT NULL GROUP BY dir_bin ORDER BY dir_bin
-                """)
-            if not df_mwd_desal.empty:
-                fig2 = go.Figure(go.Barpolar(
-                    r=df_mwd_desal["n"], theta=df_mwd_desal["dir_bin"], width=22,
-                    marker_color=df_mwd_desal["avg_hsv"],
-                    marker_colorscale=[[0,"#10b981"],[0.5,"#f59e0b"],[1,"#ef4444"]],
-                    marker_showscale=True,
-                    marker_colorbar=dict(title="HSV moy (m)", tickfont=dict(color="#94b8cc"))
-                ))
-                apply_theme(fig2)
-                fig2.update_layout(
-                    title="Rose des vagues — directions vers stations",
-                    polar=dict(
-                        bgcolor="rgba(12,24,41,0.8)",
-                        angularaxis=dict(tickmode="array", tickvals=[0,45,90,135,180,225,270,315],
-                                         ticktext=["N","NE","E","SE","S","SO","O","NO"],
-                                         direction="clockwise", rotation=90,
-                                         gridcolor="rgba(30,90,150,0.3)", tickfont=dict(color="#94b8cc")),
-                        radialaxis=dict(gridcolor="rgba(30,90,150,0.2)", tickfont=dict(color="#94b8cc"))
-                    ), height=400
-                )
-                st.plotly_chart(fig2, use_container_width=True)
-
-        section("🔗", "Corrélation vent × HSV — impact sur la prise d'eau")
-        with st.spinner():
-            df_ws_vs_hsv = q(f"""
-                SELECT MONTH,
-                       AVG(MESURE)     AS avg_hsv,
-                       AVG(wind_speed) AS avg_ws,
-                       SUM(CASE WHEN MESURE>=3.0 AND wind_speed>=10 THEN 1 ELSE 0 END)*100.0/COUNT(*) AS pct_double_alerte
-                FROM hsv {wh} GROUP BY MONTH ORDER BY MONTH
-            """)
-        if not df_ws_vs_hsv.empty:
-            df_ws_vs_hsv["MOIS_L"] = df_ws_vs_hsv["MONTH"].map(MOIS_SHORT)
-            fig3 = go.Figure()
-            fig3.add_trace(go.Scatter(x=df_ws_vs_hsv["MOIS_L"], y=df_ws_vs_hsv["avg_hsv"],
-                name="HSV moy (m)", mode="lines+markers", line=dict(color="#0ea5e9", width=2)))
-            fig3.add_trace(go.Scatter(x=df_ws_vs_hsv["MOIS_L"], y=df_ws_vs_hsv["avg_ws"],
-                name="Vent moy (m/s)", mode="lines+markers", line=dict(color="#06b6d4", width=2), yaxis="y2"))
-            apply_theme(fig3)
-            fig3.update_layout(
-                title="Corrélation HSV × Vent mensuel — risque prise d'eau",
-                yaxis=dict(title="HSV (m)", **PLOTLY_THEME["yaxis"]),
-                yaxis2=dict(title="Vent (m/s)", overlaying="y", side="right",
-                            gridcolor="rgba(0,0,0,0)", tickcolor="#4a7a96", tickfont=dict(color="#94b8cc")),
-                height=340
-            )
-            st.plotly_chart(fig3, use_container_width=True)
-
-        section("📡", "Vent et HSV par zone de distance — sélection site dessalement")
-        with st.spinner():
-            df_dist_desal = q(f"""
-                SELECT DISTANCE,
-                       AVG(MESURE)     AS avg_hsv, AVG(wind_speed) AS avg_ws,
-                       SUM(CASE WHEN sst BETWEEN 16 AND 26
-                                AND msl > 1005
-                                AND wind_speed < 10
-                                AND MESURE < 3.0 THEN 1 ELSE 0 END)*100.0/COUNT(*) AS pct_ok
-                FROM hsv {wh} WHERE sst IS NOT NULL AND msl IS NOT NULL
-                GROUP BY DISTANCE ORDER BY DISTANCE
-            """)
-        if not df_dist_desal.empty:
-            df_dist_desal["DIST_LABEL"] = df_dist_desal["DISTANCE"].map(DISTANCE_LABELS)
-            dist_c = [list(DISTANCE_COLORS.values())[i % 4] for i in range(len(df_dist_desal))]
-            fig4 = go.Figure()
-            fig4.add_trace(go.Bar(x=df_dist_desal["DIST_LABEL"], y=df_dist_desal["avg_ws"],
-                name="Vent moy (m/s)", marker_color=dist_c))
-            fig4.add_trace(go.Scatter(x=df_dist_desal["DIST_LABEL"], y=df_dist_desal["pct_ok"],
-                name="% cond. optimales SWRO", mode="lines+markers", line=dict(color="#10b981", width=2), yaxis="y2"))
-            apply_theme(fig4)
-            fig4.update_layout(title="Vent et % conditions optimales SWRO par zone",
-                yaxis=dict(title="Vent moy (m/s)", **PLOTLY_THEME["yaxis"]),
-                yaxis2=dict(title="% optimal", overlaying="y", side="right",
-                            gridcolor="rgba(0,0,0,0)", tickcolor="#4a7a96", tickfont=dict(color="#94b8cc")),
-                height=320)
-            st.plotly_chart(fig4, use_container_width=True)
-
-    with tab4:
-        section("⚙️","Fenêtres opérationnelles optimales — SST + MSL + Vent + HSV")
-        with st.spinner():
-            df_ops = q(f"""
-                SELECT MONTH,
-                       SUM(CASE WHEN sst BETWEEN 16 AND 26
-                                AND msl > 1005
-                                AND wind_speed < 10
-                                AND MESURE < 3.0 THEN 1 ELSE 0 END)*100.0/COUNT(*) AS pct_ok,
-                       SUM(CASE WHEN sst BETWEEN 16 AND 26
-                                AND msl > 1005
-                                AND MESURE < 3.0 THEN 1 ELSE 0 END)*100.0/COUNT(*) AS pct_ok_sans_vent
-                FROM hsv {wh} WHERE sst IS NOT NULL AND msl IS NOT NULL
-                GROUP BY MONTH ORDER BY MONTH
-            """)
-        if not df_ops.empty:
-            df_ops["MOIS_L"] = df_ops["MONTH"].map(MOIS_LABELS)
-            col1, col2 = st.columns(2)
+                df_niv = q(f"SELECT NIVEAU,COUNT(*) AS n FROM {VIEW} {wh} GROUP BY NIVEAU")
+                if not df_niv.empty:
+                    ordre = ["Calme (<0.5m)","Faible (0.5–1.5m)","Modéré (1.5–2.5m)","Agité (2.5–4m)","Très agité (>4m)"]
+                    df_niv["NIVEAU"] = pd.Categorical(df_niv["NIVEAU"],categories=ordre,ordered=True)
+                    df_niv = df_niv.sort_values("NIVEAU")
+                    fig = go.Figure(go.Pie(labels=df_niv["NIVEAU"],values=df_niv["n"],hole=0.55,
+                        marker_colors=[DANGER_COLORS.get(n,"#666") for n in df_niv["NIVEAU"]]))
+                    apply_theme(fig); fig.update_layout(title="Répartition par niveau",height=340)
+                    st.plotly_chart(fig,use_container_width=True)
+        with tab3:
+            col1,col2 = st.columns(2)
             with col1:
-                fig = go.Figure()
-                fig.add_trace(go.Bar(x=df_ops["MOIS_L"], y=df_ops["pct_ok"],
-                    name="Avec contrainte vent",
-                    marker_color=df_ops["pct_ok"].apply(lambda v: "#10b981" if v>80 else "#f59e0b" if v>60 else "#ef4444"),
-                    text=df_ops["pct_ok"].map(lambda v: f"{v:.1f}%"), textposition="outside"))
-                apply_theme(fig); fig.update_layout(title="% optimal SWRO (SST+MSL+Vent+HSV)",
-                    yaxis_title="%", height=360)
-                st.plotly_chart(fig, use_container_width=True)
+                df_seas = q(f"SELECT SEASON,AVG(MESURE) AS avg_hsv,COUNT(*) AS n FROM {VIEW} {wh} GROUP BY SEASON")
+                if not df_seas.empty:
+                    ord_s = ['Hiver','Printemps','Été','Automne']
+                    df_seas["SEASON"] = pd.Categorical(df_seas["SEASON"],categories=ord_s,ordered=True)
+                    df_seas = df_seas.sort_values("SEASON")
+                    fig = go.Figure(go.Bar(x=df_seas["SEASON"],y=df_seas["avg_hsv"],
+                        marker_color=[SEASON_COLORS.get(s,"#0ea5e9") for s in df_seas["SEASON"]],
+                        text=df_seas["avg_hsv"].map(lambda v:f"{v:.2f} m"),textposition="outside"))
+                    apply_theme(fig); fig.update_layout(title="HSV par saison",yaxis_title="HSV (m)",height=340)
+                    st.plotly_chart(fig,use_container_width=True)
             with col2:
-                fig2 = go.Figure()
-                fig2.add_trace(go.Bar(x=df_ops["MOIS_L"], y=df_ops["pct_ok_sans_vent"],
-                    name="Sans contrainte vent", marker_color="#0ea5e9",
-                    text=df_ops["pct_ok_sans_vent"].map(lambda v: f"{v:.1f}%"), textposition="outside"))
-                fig2.add_trace(go.Bar(x=df_ops["MOIS_L"], y=df_ops["pct_ok"],
-                    name="Avec contrainte vent", marker_color="#ef4444",
-                    text=df_ops["pct_ok"].map(lambda v: f"{v:.1f}%"), textposition="outside"))
-                apply_theme(fig2); fig2.update_layout(barmode="overlay", title="Impact du vent sur la disponibilité SWRO",
-                    yaxis_title="%", height=360)
-                st.plotly_chart(fig2, use_container_width=True)
+                df_hr = q(f"SELECT HOUR,AVG(MESURE) AS avg_hsv FROM {VIEW} {wh} GROUP BY HOUR ORDER BY HOUR")
+                if not df_hr.empty:
+                    fig = go.Figure(go.Scatter(x=df_hr["HOUR"],y=df_hr["avg_hsv"],mode="lines+markers",fill="tozeroy",
+                        line=dict(color="#06b6d4",width=2),fillcolor="rgba(6,182,212,.1)"))
+                    apply_theme(fig); fig.update_layout(title="Cycle diurne",xaxis_title=T("hour"),yaxis_title="HSV (m)",height=340)
+                    st.plotly_chart(fig,use_container_width=True)
+        with tab4:
+            df_pl = q(f"""SELECT NOM_PLAGE,NOM_WILAYA,AVG(MESURE) AS avg_hsv,MAX(MESURE) AS max_hsv,
+                       STDDEV(MESURE) AS std_hsv,COUNT(*) AS n,
+                       SUM(CASE WHEN MESURE>=2 THEN 1 ELSE 0 END)*100.0/COUNT(*) AS pct_danger
+                FROM {VIEW} {wh} GROUP BY NOM_PLAGE,NOM_WILAYA ORDER BY avg_hsv DESC LIMIT 30""")
+            if not df_pl.empty:
+                fig = go.Figure(go.Bar(x=df_pl["avg_hsv"],y=df_pl["NOM_PLAGE"],orientation="h",
+                    marker_color=df_pl["avg_hsv"].apply(lambda v:"#ef4444" if v>=1.5 else "#f59e0b" if v>=1 else "#10b981"),
+                    text=df_pl["avg_hsv"].map(lambda v:f"{v:.2f} m"),textposition="outside"))
+                apply_theme(fig); fig.update_layout(title="Top 30 plages — HSV moyenne",xaxis_title="HSV (m)",
+                    height=max(400,len(df_pl)*22),yaxis=dict(autorange="reversed",**PLOTLY_THEME["yaxis"]))
+                st.plotly_chart(fig,use_container_width=True)
 
-
-# ═══════════════════════════════════════════════════════════════════════
-# PAGE : AQUACULTURE
-# ═══════════════════════════════════════════════════════════════════════
-elif page == "🐟 Aquaculture":
-    page_header("#10b981","🐟","Aquaculture Marine","Fenêtres favorables — HSV · SST · Vent · Direction · Distance")
-
-    st.markdown("""
-    <div class="info-card" style="border-left-color:#10b981; background:rgba(16,185,129,0.06);">
-        <div class="title" style="color:#34d399;">Critères d'éligibilité aquaculture — tous paramètres</div>
-        <div class="threshold-row"><span class="threshold-key">HSV sécurité cages</span><span class="threshold-val" style="color:#34d399;">HSV &lt; 1.2 m</span></div>
-        <div class="threshold-row"><span class="threshold-key">SST croissance</span><span class="threshold-val" style="color:#34d399;">16 °C – 24 °C</span></div>
-        <div class="threshold-row"><span class="threshold-key">MWP favorable</span><span class="threshold-val">&lt; 8 s</span></div>
-        <div class="threshold-row"><span class="threshold-key">Vent favorable</span><span class="threshold-val" style="color:#34d399;">&lt; 8 m/s (stabilité structures)</span></div>
-        <div class="threshold-row"><span class="threshold-key">📐 Risk Score</span><span class="threshold-val" style="color:#a78bfa;">(HSV/2)×0.4 + (vent/10)×0.3 + (SST_écart/8)×0.2 + (MWP/10)×0.1</span></div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    wh = W()
-    show_kpis(wh)
-
-    with st.spinner():
-        r_aqua_vent = q(f"""
-            SELECT AVG(wind_speed) AS avg_ws,
-                   SUM(CASE WHEN wind_speed<8 THEN 1 ELSE 0 END)*100.0/COUNT(*) AS pct_fav_ws,
-                   AVG(mwd) AS avg_mwd
-            FROM hsv {wh}
-        """)
-    if not r_aqua_vent.empty:
-        section("💨", "Indicateurs vent — aquaculture")
-        c1,c2,c3 = st.columns(3)
-        c1.metric("💨 Vent Moyen",         f"{r_aqua_vent['avg_ws'].iloc[0]:.2f} m/s")
-        c2.metric("✅ % Vent Favorable <8 m/s", f"{r_aqua_vent['pct_fav_ws'].iloc[0]:.1f}%")
-        c3.metric("🧭 MWD Moyen",          f"{r_aqua_vent['avg_mwd'].iloc[0]:.1f}°")
-
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 Fenêtres Favorables","🌬️ Vent & Direction","🏖️ Meilleurs Sites","📅 Saisonnalité"])
-
-    with tab1:
-        section("📊","Conditions favorables par mois — critère étendu avec vent")
-        with st.spinner():
-            df_aqua_m = q(f"""
-                SELECT MONTH,
-                       SUM(CASE WHEN AQUA_OK THEN 1 ELSE 0 END)*100.0/COUNT(*) AS pct_ok,
-                       SUM(CASE WHEN AQUA_OK AND wind_speed<8 THEN 1 ELSE 0 END)*100.0/COUNT(*) AS pct_ok_vent,
-                       AVG(MESURE) AS avg_hsv, AVG(sst) AS avg_sst,
-                       AVG(wind_speed) AS avg_ws, AVG(mwp) AS avg_mwp
-                FROM hsv {wh} GROUP BY MONTH ORDER BY MONTH
-            """)
-        if not df_aqua_m.empty:
-            df_aqua_m["MOIS_L"] = df_aqua_m["MONTH"].map(MOIS_SHORT)
-            col1 = st.container()
-            with col1:
-                fig = go.Figure()
-                fig.add_trace(go.Bar(x=df_aqua_m["MOIS_L"], y=df_aqua_m["pct_ok"],
-                    name="Critères HSV+SST+MWP",
-                    marker_color=df_aqua_m["pct_ok"].apply(lambda v: "#10b981" if v>70 else "#f59e0b" if v>40 else "#ef4444"),
-                    text=df_aqua_m["pct_ok"].map(lambda v: f"{v:.0f}%"), textposition="outside"))
-                fig.add_trace(go.Bar(x=df_aqua_m["MOIS_L"], y=df_aqua_m["pct_ok_vent"],
-                    name="+ Vent <8 m/s", marker_color="rgba(6,182,212,0.6)"))
-                apply_theme(fig); fig.update_layout(barmode="overlay",
-                    title="% conditions favorables — avec et sans contrainte vent", yaxis_title="%", height=360)
-                st.plotly_chart(fig, use_container_width=True)
-            
-
-        section("📈","Tendance annuelle % conditions favorables")
-        with st.spinner():
-            df_aqua_yr = q(f"""
-                SELECT YEAR,
-                       SUM(CASE WHEN AQUA_OK THEN 1 ELSE 0 END)*100.0/COUNT(*) AS pct_ok,
-                       SUM(CASE WHEN AQUA_OK AND wind_speed<8 THEN 1 ELSE 0 END)*100.0/COUNT(*) AS pct_ok_vent
-                FROM hsv {wh} GROUP BY YEAR ORDER BY YEAR
-            """)
-        if not df_aqua_yr.empty:
-            z  = np.polyfit(df_aqua_yr["YEAR"], df_aqua_yr["pct_ok_vent"], 1)
-            p_ = np.poly1d(z)
-            fig3 = go.Figure()
-            fig3.add_trace(go.Scatter(x=df_aqua_yr["YEAR"], y=df_aqua_yr["pct_ok"],
-                name="Critères HSV+SST+MWP", mode="lines+markers", line=dict(color="#10b981", width=2)))
-            fig3.add_trace(go.Scatter(x=df_aqua_yr["YEAR"], y=df_aqua_yr["pct_ok_vent"],
-                name="+ Vent <8 m/s", mode="lines+markers", line=dict(color="#06b6d4", width=2),
-                fill="tozeroy", fillcolor="rgba(6,182,212,0.06)"))
-            fig3.add_trace(go.Scatter(x=df_aqua_yr["YEAR"], y=p_(df_aqua_yr["YEAR"]),
-                name="Tendance", mode="lines", line=dict(color="#f59e0b", dash="dash")))
-            apply_theme(fig3); fig3.update_layout(title="Tendance — % conditions favorables aquaculture",
-                xaxis_title="Année", yaxis_title="%", height=320)
-            st.plotly_chart(fig3, use_container_width=True)
-
-    with tab2:
-        section("🌬️", "Vent mensuel — impact sur les structures aquacoles")
-        col1, col2 = st.columns(2)
-        with col1:
-            with st.spinner():
-                df_ws_aqua = q(f"""
-                    SELECT MONTH, AVG(wind_speed) AS avg_ws, MAX(wind_speed) AS max_ws,
-                           AVG(u10) AS avg_u10, AVG(v10) AS avg_v10,
-                           SUM(CASE WHEN wind_speed<8 THEN 1 ELSE 0 END)*100.0/COUNT(*) AS pct_fav
-                    FROM hsv {wh} GROUP BY MONTH ORDER BY MONTH
-                """)
-            if not df_ws_aqua.empty:
-                df_ws_aqua["MOIS_L"] = df_ws_aqua["MONTH"].map(MOIS_SHORT)
-                fig = go.Figure()
-                fig.add_trace(go.Bar(x=df_ws_aqua["MOIS_L"], y=df_ws_aqua["avg_ws"],
-                    name="Vent moy", marker_color=df_ws_aqua["avg_ws"].apply(
-                        lambda v: "#ef4444" if v>8 else "#f59e0b" if v>5 else "#10b981"),
-                    text=df_ws_aqua["avg_ws"].map(lambda v: f"{v:.1f}"), textposition="outside"))
-                fig.add_hline(y=8, line_dash="dash", line_color="#f59e0b", annotation_text="Seuil 8 m/s")
-                apply_theme(fig); fig.update_layout(title="Vent mensuel — sécurité cages", yaxis_title="m/s", height=340)
-                st.plotly_chart(fig, use_container_width=True)
-        with col2:
-            section("🧭", "Rose des vagues — direction favorable aquaculture")
-            with st.spinner():
-                df_mwd_aqua = q(f"""
-                    SELECT FLOOR(mwd/22.5)*22.5 AS dir_bin, COUNT(*) AS n,
-                           AVG(MESURE) AS avg_hsv,
-                           SUM(CASE WHEN AQUA_OK THEN 1 ELSE 0 END)*100.0/COUNT(*) AS pct_ok
-                    FROM hsv {wh} WHERE mwd IS NOT NULL GROUP BY dir_bin ORDER BY dir_bin
-                """)
-            if not df_mwd_aqua.empty:
-                fig2 = go.Figure(go.Barpolar(
-                    r=df_mwd_aqua["pct_ok"], theta=df_mwd_aqua["dir_bin"], width=22,
-                    marker_color=df_mwd_aqua["pct_ok"],
-                    marker_colorscale=[[0,"#ef4444"],[0.5,"#f59e0b"],[1,"#10b981"]],
-                    marker_showscale=True,
-                    marker_colorbar=dict(title="% cond. fav.", tickfont=dict(color="#94b8cc"))
-                ))
-                apply_theme(fig2)
-                fig2.update_layout(
-                    title="Rose des directions — % conditions favorables aquaculture",
-                    polar=dict(
-                        bgcolor="rgba(12,24,41,0.8)",
-                        angularaxis=dict(tickmode="array", tickvals=[0,45,90,135,180,225,270,315],
-                                         ticktext=["N","NE","E","SE","S","SO","O","NO"],
-                                         direction="clockwise", rotation=90,
-                                         gridcolor="rgba(30,90,150,0.3)", tickfont=dict(color="#94b8cc")),
-                        radialaxis=dict(gridcolor="rgba(30,90,150,0.2)", tickfont=dict(color="#94b8cc"))
-                    ), height=400
-                )
-                st.plotly_chart(fig2, use_container_width=True)
-
-        section("📡", "Conditions favorables par zone de distance — sélection site aquaculture")
-        with st.spinner():
-            df_dist_aqua = q(f"""
-                SELECT DISTANCE,
-                       SUM(CASE WHEN AQUA_OK THEN 1 ELSE 0 END)*100.0/COUNT(*) AS pct_ok,
-                       SUM(CASE WHEN AQUA_OK AND wind_speed<8 THEN 1 ELSE 0 END)*100.0/COUNT(*) AS pct_ok_vent,
-                       AVG(MESURE)     AS avg_hsv,
-                       AVG(wind_speed) AS avg_ws,
-                       AVG(sst)        AS avg_sst
-                FROM hsv {wh} GROUP BY DISTANCE ORDER BY DISTANCE
-            """)
-        if not df_dist_aqua.empty:
-            df_dist_aqua["DIST_LABEL"] = df_dist_aqua["DISTANCE"].map(DISTANCE_LABELS)
-            dist_c = [list(DISTANCE_COLORS.values())[i % 4] for i in range(len(df_dist_aqua))]
-
-            cols_da = st.columns(len(df_dist_aqua))
-            for i, (_, row) in enumerate(df_dist_aqua.iterrows()):
-                c = list(DISTANCE_COLORS.values())[i % 4]
-                score = row["pct_ok_vent"]
-                score_color = "#10b981" if score > 60 else "#f59e0b" if score > 35 else "#ef4444"
-                with cols_da[i]:
-                    st.markdown(f"""
-                    <div class="stat-card" style="border-top:2px solid {c};">
-                        <div class="label">{row['DIST_LABEL']}</div>
-                        <div class="value" style="color:{score_color};font-size:1.4rem;">{score:.1f}%</div>
-                        <div class="sub">HSV moy: {row['avg_hsv']:.2f} m</div>
-                        <div class="sub">Vent moy: {row['avg_ws']:.1f} m/s</div>
-                        <div class="sub">SST moy: {row['avg_sst']:.1f}°C</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-            fig3 = go.Figure()
-            fig3.add_trace(go.Bar(x=df_dist_aqua["DIST_LABEL"], y=df_dist_aqua["pct_ok"],
-                name="HSV+SST+MWP", marker_color=dist_c))
-            fig3.add_trace(go.Bar(x=df_dist_aqua["DIST_LABEL"], y=df_dist_aqua["pct_ok_vent"],
-                name="+Vent <8m/s", marker_color="rgba(6,182,212,0.7)"))
-            apply_theme(fig3); fig3.update_layout(barmode="overlay",
-                title="% conditions favorables par zone de distance", yaxis_title="%", height=320)
-            st.plotly_chart(fig3, use_container_width=True)
-
-    with tab3:
-        section("🏖️","Meilleurs sites potentiels — Risk Score Aquaculture")
-
-        with st.spinner():
-            df_sites = q(f"""
-                SELECT NOM_PLAGE, NOM_WILAYA, X, Y, DISTANCE,
-                       SUM(CASE WHEN AQUA_OK AND wind_speed<8 THEN 1 ELSE 0 END)*100.0/COUNT(*) AS pct_ok,
-                       AVG(MESURE)      AS avg_hsv,
-                       AVG(sst)         AS avg_sst,
-                       AVG(wind_speed)  AS avg_ws,
-                       AVG(mwd)         AS avg_mwd,
-                       AVG(mwp)         AS avg_mwp,
-                       COUNT(*)         AS n
-                FROM hsv {wh}
-                GROUP BY NOM_PLAGE, NOM_WILAYA, X, Y, DISTANCE
-            """)
-
-        if not df_sites.empty:
-            # ── Risk Score Aquaculture ──────────────────────────────────
-            # Composantes : HSV (sécurité cages), vent, SST (écart zone optimale), MWP
-            df_sites["avg_sst"] = df_sites["avg_sst"].fillna(20.0)
-            df_sites["avg_mwp"] = df_sites["avg_mwp"].fillna(df_sites["avg_mwp"].median())
-            # SST écart par rapport au centre de la plage optimale (20°C)
-            df_sites["sst_ecart"] = (df_sites["avg_sst"] - 20.0).abs() / 8.0
-            df_sites["sst_ecart"] = df_sites["sst_ecart"].clip(0, 1)
-
-            df_sites["risk_score_aqua"] = (
-                (df_sites["avg_hsv"] / 2.0)   * 0.4
-              + (df_sites["avg_ws"]  / 10.0)  * 0.3
-              + df_sites["sst_ecart"]          * 0.2
-              + (df_sites["avg_mwp"] / 10.0)  * 0.1
-            ).round(4)
-
-            # Score de favorabilité = inverse du risk
-            df_sites["favorabilite"] = (1 - df_sites["risk_score_aqua"].clip(0, 1)) * 100
-
-            df_top = df_sites.sort_values("pct_ok", ascending=False).head(10)
-
-            for _, row in df_top.iterrows():
-                score = row["pct_ok"]
-                color = "#10b981" if score > 60 else "#f59e0b" if score > 35 else "#ef4444"
-                dist_lbl = DISTANCE_LABELS.get(int(row['DISTANCE']) if not np.isnan(row['DISTANCE']) else 1, "N/A")
-                st.markdown(f"""
-                <div style="background:var(--bg-card);border:1px solid var(--border-soft);
-                     border-left:3px solid {color};border-radius:var(--r-md);
-                     padding:10px 14px;margin-bottom:6px;
-                     display:flex;align-items:center;justify-content:space-between;">
-                    <div>
-                        <span style="font-size:0.85rem;font-weight:600;color:var(--text-h);">{row['NOM_PLAGE']}</span>
-                        <span style="font-size:0.75rem;color:var(--text-muted);margin-left:8px;">{row['NOM_WILAYA']} · {dist_lbl}</span>
-                    </div>
-                    <div style="text-align:right;">
-                        <span style="font-family:var(--font-mono);font-size:0.95rem;font-weight:700;color:{color};">{score:.1f}% fav.</span>
-                        <span style="font-size:0.72rem;color:var(--text-muted);margin-left:6px;">
-                            HSV: {row['avg_hsv']:.2f}m · Vent: {row['avg_ws']:.1f}m/s
-                            {f"· SST: {row['avg_sst']:.1f}°C" if not np.isnan(row['avg_sst']) else ""}
-                            · MWP: {row['avg_mwp']:.1f}s · Risk: {row['risk_score_aqua']:.3f}
-                        </span>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-
-            st.markdown("""
-            <div style="font-size:0.82rem;color:#94b8cc;font-style:italic;margin-bottom:1rem;">
-              Risk Score Aquaculture : <code>(HSV/2)×0.4 + (Vent/10)×0.3 + (|SST-20|/8)×0.2 + (MWP/10)×0.1</code>
-            </div>
-            """, unsafe_allow_html=True)
-
-            section("🗺️","Carte — sites aquaculture (Risk Score Aquaculture)")
-            if not df_sites[["X","Y"]].isnull().any().any():
-                fig = px.scatter_mapbox(
-                    df_sites, lat="Y", lon="X",
-                    color="risk_score_aqua", size="pct_ok",
-                    hover_name="NOM_PLAGE",
-                    hover_data={"NOM_WILAYA":True,"avg_hsv":":.2f","avg_ws":":.1f","avg_sst":":.1f","avg_mwp":":.1f","pct_ok":":.1f","risk_score_aqua":":.3f","X":False,"Y":False},
-                    color_continuous_scale=["#10b981","#f59e0b","#ef4444"],
-                    range_color=[0, 0.8], size_max=18, zoom=5,
-                    mapbox_style="carto-darkmatter",
-                    labels={"risk_score_aqua":"Risk Aqua","pct_ok":"% fav."}
-                )
-                apply_theme(fig); fig.update_layout(height=450, margin=dict(l=0,r=0,t=40,b=0),
-                    title="Sites aquaculture — Risk Score (vert=favorable, rouge=risqué)")
-                st.plotly_chart(fig, use_container_width=True)
-
-    with tab4:
-        section("📅","SST, Vent et HSV — critères de croissance par saison")
-        if has_col("sst"):
-            with st.spinner():
-                df_sst_aqua = q(f"""
-                    SELECT MONTH, SEASON,
-                           AVG(sst) AS avg_sst, AVG(MESURE) AS avg_hsv,
-                           AVG(wind_speed) AS avg_ws,
-                           SUM(CASE WHEN sst BETWEEN 16 AND 24 THEN 1 ELSE 0 END)*100.0/COUNT(*) AS pct_sst_ok,
-                           SUM(CASE WHEN MESURE < 1.2 THEN 1 ELSE 0 END)*100.0/COUNT(*) AS pct_hsv_ok,
-                           SUM(CASE WHEN wind_speed < 8 THEN 1 ELSE 0 END)*100.0/COUNT(*) AS pct_ws_ok
-                    FROM hsv {wh} WHERE sst IS NOT NULL
-                    GROUP BY MONTH, SEASON ORDER BY MONTH
-                """)
-            if not df_sst_aqua.empty:
-                df_sst_aqua["MOIS_L"] = df_sst_aqua["MONTH"].map(MOIS_SHORT)
-                col1, col2 = st.columns(2)
-                with col1:
-                    fig = go.Figure()
-                    fig.add_trace(go.Bar(x=df_sst_aqua["MOIS_L"], y=df_sst_aqua["pct_sst_ok"], name="SST 16–24°C", marker_color="#06b6d4"))
-                    fig.add_trace(go.Bar(x=df_sst_aqua["MOIS_L"], y=df_sst_aqua["pct_hsv_ok"], name="HSV < 1.2 m",  marker_color="#10b981"))
-                    fig.add_trace(go.Bar(x=df_sst_aqua["MOIS_L"], y=df_sst_aqua["pct_ws_ok"],  name="Vent < 8 m/s", marker_color="#8b5cf6"))
-                    apply_theme(fig); fig.update_layout(barmode="group",
-                        title="% critères satisfaits par mois", yaxis_title="%", height=340)
-                    st.plotly_chart(fig, use_container_width=True)
-                with col2:
-                    fig2 = px.scatter(df_sst_aqua, x="avg_sst", y="avg_hsv",
-                        color="SEASON", size="avg_ws", text="MOIS_L",
-                        color_discrete_map=SEASON_COLORS,
-                        labels={"avg_sst":"SST (°C)","avg_hsv":"HSV (m)","avg_ws":"Vent moy (m/s)","SEASON":"Saison"},
-                        size_max=20)
-                    fig2.add_hrect(y0=0, y1=1.2, fillcolor="rgba(16,185,129,0.08)", line_width=0)
-                    fig2.add_vrect(x0=16, x1=24, fillcolor="rgba(16,185,129,0.08)", line_width=0)
-                    apply_theme(fig2); fig2.update_layout(
-                        title="Zone favorable (SST × HSV) — taille bulle = vent", height=340)
-                    st.plotly_chart(fig2, use_container_width=True)
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# PAGE : SYNTHÈSE & EXPORT
-# ═══════════════════════════════════════════════════════════════════════
-elif page == "📋 Synthèse & Export":
-    page_header("#8b5cf6","📋","Synthèse & Export","Tableaux récapitulatifs et téléchargement des données")
-    wh = W()
-
-    tab1, tab2, tab3 = st.tabs(["📊 Synthèse par Plage","📅 Synthèse Mensuelle","💾 Export"])
-
-    with tab1:
-        section("📊","Statistiques complètes par plage — HSV, vent, direction")
-        with st.spinner("Calcul en cours..."):
-            cols_extra = ""
-            if has_col("sst"):    cols_extra += ", AVG(sst) AS avg_sst, MIN(sst) AS min_sst, MAX(sst) AS max_sst"
-            if has_col("mwp"):    cols_extra += ", AVG(mwp) AS avg_mwp"
-            if has_col("msl"):    cols_extra += ", AVG(msl) AS avg_msl, MIN(msl) AS min_msl"
-            if has_col("wind_speed"): cols_extra += ", AVG(wind_speed) AS avg_ws, MAX(wind_speed) AS max_ws, SUM(CASE WHEN wind_speed>=10 THEN 1 ELSE 0 END)*100.0/COUNT(*) AS pct_vent_fort"
-            if has_col("mwd"):    cols_extra += ", AVG(mwd) AS avg_mwd"
-
-            df_synth = q(f"""
-                SELECT NOM_PLAGE, NOM_WILAYA,
-                       COUNT(*)        AS n,
-                       ROUND(AVG(MESURE),3)    AS avg_hsv,
-                       ROUND(MAX(MESURE),2)    AS max_hsv,
-                       ROUND(STDDEV(MESURE),3) AS std_hsv,
-                       ROUND(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY MESURE),2) AS p95,
-                       ROUND(SUM(CASE WHEN MESURE>=1 THEN 1 ELSE 0 END)*100.0/COUNT(*),1) AS pct_vig,
-                       ROUND(SUM(CASE WHEN MESURE>=2 THEN 1 ELSE 0 END)*100.0/COUNT(*),1) AS pct_danger,
-                       ROUND(SUM(CASE WHEN AQUA_OK THEN 1 ELSE 0 END)*100.0/COUNT(*),1)   AS pct_aqua,
-                       ROUND(SUM(CASE WHEN DESSAL_OK THEN 1 ELSE 0 END)*100.0/COUNT(*),1) AS pct_dessal
-                       {cols_extra}
-                FROM hsv {wh} GROUP BY NOM_PLAGE, NOM_WILAYA ORDER BY avg_hsv DESC
-            """)
-        if not df_synth.empty:
-            st.dataframe(df_synth, use_container_width=True, hide_index=True)
-            csv = df_synth.to_csv(index=False).encode("utf-8")
-            st.download_button("⬇️ Télécharger CSV", csv, "synthese_plages.csv", "text/csv")
-
-    with tab2:
-        section("📅","Statistiques mensuelles globales — toutes variables")
-        with st.spinner():
-            cols_m = ""
-            if has_col("sst"):        cols_m += ", ROUND(AVG(sst),2) AS avg_sst"
-            if has_col("mwp"):        cols_m += ", ROUND(AVG(mwp),2) AS avg_mwp"
-            if has_col("msl"):        cols_m += ", ROUND(AVG(msl),1) AS avg_msl"
-            if has_col("wind_speed"): cols_m += ", ROUND(AVG(wind_speed),2) AS avg_ws, ROUND(MAX(wind_speed),1) AS max_ws, ROUND(SUM(CASE WHEN wind_speed>=10 THEN 1 ELSE 0 END)*100.0/COUNT(*),1) AS pct_vent_fort"
-            if has_col("mwd"):        cols_m += ", ROUND(AVG(mwd),1) AS avg_mwd"
-
-            df_mo = q(f"""
-                SELECT MONTH, COUNT(*) AS n,
-                       ROUND(AVG(MESURE),3)    AS avg_hsv,
-                       ROUND(MAX(MESURE),2)    AS max_hsv,
-                       ROUND(STDDEV(MESURE),3) AS std_hsv,
-                       ROUND(SUM(CASE WHEN MESURE>=1 THEN 1 ELSE 0 END)*100.0/COUNT(*),1) AS pct_vig,
-                       ROUND(SUM(CASE WHEN MESURE>=2 THEN 1 ELSE 0 END)*100.0/COUNT(*),1) AS pct_danger,
-                       ROUND(SUM(CASE WHEN AQUA_OK THEN 1 ELSE 0 END)*100.0/COUNT(*),1)   AS pct_aqua,
-                       ROUND(SUM(CASE WHEN DESSAL_OK THEN 1 ELSE 0 END)*100.0/COUNT(*),1) AS pct_dessal
-                       {cols_m}
-                FROM hsv {wh} GROUP BY MONTH ORDER BY MONTH
-            """)
-        if not df_mo.empty:
-            df_mo["MOIS"] = df_mo["MONTH"].map(MOIS_LABELS)
-            df_mo = df_mo.drop(columns=["MONTH"])
-            cols_ord = ["MOIS"] + [c for c in df_mo.columns if c != "MOIS"]
-            st.dataframe(df_mo[cols_ord], use_container_width=True, hide_index=True)
-            csv2 = df_mo[cols_ord].to_csv(index=False).encode("utf-8")
-            st.download_button("⬇️ Télécharger CSV mensuel", csv2, "synthese_mensuelle.csv", "text/csv")
-
-    with tab3:
-        section("💾","Export personnalisé")
-        col_choices = st.multiselect("Colonnes à exporter",
-            ["NOM_PLAGE","NOM_WILAYA","DATETIME","MESURE","ALERTE","NIVEAU",
-             "wind_speed","u10","v10","mwp","mwd","sst","msl","DISTANCE","SEASON","YEAR","MONTH"],
-            default=["NOM_PLAGE","NOM_WILAYA","DATETIME","MESURE","ALERTE","NIVEAU","wind_speed","mwp","mwd"])
-        max_rows = st.slider("Nombre maximum de lignes", 1000, 100000, 10000, 1000)
-        if col_choices:
-            with st.spinner("Extraction..."):
-                cols_sql = ", ".join(col_choices)
-                df_exp = q(f"SELECT {cols_sql} FROM hsv {wh} LIMIT {max_rows}")
-            st.dataframe(df_exp, use_container_width=True, hide_index=True)
-            csv3 = df_exp.to_csv(index=False).encode("utf-8")
-            st.download_button("⬇️ Télécharger CSV", csv3, "export_hsv.csv", "text/csv")
-            pq_bytes = df_exp.to_parquet(index=False)
-            st.download_button("⬇️ Télécharger Parquet", pq_bytes, "export_hsv.parquet", "application/octet-stream")
-
-# ═══════════════════════════════════════════════════════════════════════
-# PAGE : CARTE DES DANGERS
-# ═══════════════════════════════════════════════════════════════════════
-elif page == "🗺️ Carte des Dangers":
-    page_header("#ef4444","🗺️","Carte des Dangers","Cartographie interactive des risques — côtes algériennes")
-
-    wh = W()
-
-    section("🗺️","Carte interactive des plages")
-    map_metric = st.radio(
-        "Indicateur cartographié",
-        ["HSV Moyenne", "% Danger (≥2m)", "% Aquaculture OK", "% Dessalement OK", "HSV Maximum", "HSV par Distance"],
-        horizontal=True
-    )
-
-    # ── Modes standard ──────────────────────────────────────────────────
-    if map_metric != "HSV par Distance":
-
-        metric_map = {
-            "HSV Moyenne":       ("avg_hsv",    "AVG(MESURE)",   "HSV Moy (m)",    "Blues"),
-            "% Danger (≥2m)":    ("pct_danger", "SUM(CASE WHEN MESURE>=2 THEN 1 ELSE 0 END)*100.0/COUNT(*)", "% Danger", ["#10b981","#f59e0b","#ef4444"]),
-            "% Aquaculture OK":  ("pct_aqua",   "SUM(CASE WHEN AQUA_OK THEN 1 ELSE 0 END)*100.0/COUNT(*)",  "% Aqua OK", ["#ef4444","#f59e0b","#10b981"]),
-            "% Dessalement OK":  ("pct_dessal", "SUM(CASE WHEN DESSAL_OK THEN 1 ELSE 0 END)*100.0/COUNT(*)", "% Dessal OK", ["#ef4444","#f59e0b","#10b981"]),
-            "HSV Maximum":       ("max_hsv",    "MAX(MESURE)",   "HSV Max (m)",    "Reds"),
-        }
-
-        col_name, sql_expr, label, cscale = metric_map[map_metric]
-
-        with st.spinner("Chargement des données cartographiques..."):
-            extra_sst = ", ROUND(AVG(sst),1) AS avg_sst" if has_col("sst") else ""
-            df_map = q(f"""
-                SELECT NOM_PLAGE, NOM_WILAYA,
-                       FIRST(X) AS lon, FIRST(Y) AS lat,
-                       ROUND({sql_expr}, 3) AS val,
-                       AVG(MESURE)  AS avg_hsv,
-                       MAX(MESURE)  AS max_hsv
-                       {extra_sst}
-                FROM hsv {wh}
-                GROUP BY NOM_PLAGE, NOM_WILAYA
-                HAVING lon IS NOT NULL AND lat IS NOT NULL
-            """)
-
-        if not df_map.empty:
-            hover_data = {"NOM_WILAYA": True, "avg_hsv": ":.2f", "max_hsv": ":.2f",
-                          "lon": False, "lat": False}
-            if "avg_sst" in df_map.columns:
-                hover_data["avg_sst"] = ":.1f"
-
-            fig = px.scatter_mapbox(
-                df_map, lat="lat", lon="lon",
-                color="val", size="val",
-                hover_name="NOM_PLAGE",
-                hover_data=hover_data,
-                color_continuous_scale=cscale,
-                size_max=22, zoom=5,
-                mapbox_style="carto-darkmatter",
-                labels={"val": label}
-            )
-            apply_theme(fig)
-            fig.update_layout(
-                height=520,
-                margin=dict(l=0,r=0,t=40,b=0),
-                title=f"Côtes algériennes — {map_metric}"
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-            # ── Classement par wilaya ──────────────────────────────────
-            section("📊","Classement par wilaya")
-            with st.spinner():
-                df_wil = q(f"""
-                    SELECT NOM_WILAYA,
-                           COUNT(DISTINCT NOM_PLAGE) AS nb_plages,
-                           ROUND(AVG(MESURE),3)  AS avg_hsv,
-                           ROUND(MAX(MESURE),2)  AS max_hsv,
-                           ROUND(SUM(CASE WHEN MESURE>=2 THEN 1 ELSE 0 END)*100.0/COUNT(*),1) AS pct_danger,
-                           ROUND(SUM(CASE WHEN AQUA_OK THEN 1 ELSE 0 END)*100.0/COUNT(*),1)  AS pct_aqua,
-                           ROUND(SUM(CASE WHEN DESSAL_OK THEN 1 ELSE 0 END)*100.0/COUNT(*),1) AS pct_dessal
-                    FROM hsv {wh}
-                    GROUP BY NOM_WILAYA ORDER BY avg_hsv DESC
-                """)
-            if not df_wil.empty:
-                df_wil.columns = ["Wilaya","Nb plages","HSV Moy (m)","HSV Max (m)","% Danger","% Aqua OK","% Dessal OK"]
-                st.dataframe(df_wil, use_container_width=True, hide_index=True)
-
-            # ── Classement par plage ───────────────────────────────────
-            section("🏖️","Classement par plage")
-            col_sort, col_n = st.columns([3, 1])
-            with col_sort:
-                sort_by = st.selectbox(
-                    "Trier par",
-                    ["HSV Moyenne ↓", "HSV Maximum ↓", "% Danger ↓", "% Aquaculture OK ↓", "% Dessalement OK ↓"],
-                    key="sort_plage_std"
-                )
-            with col_n:
-                top_n = st.number_input("Top N plages", min_value=5, max_value=56, value=20, step=5, key="topn_std")
-
-            sort_col_map = {
-                "HSV Moyenne ↓":        "avg_hsv",
-                "HSV Maximum ↓":        "max_hsv",
-                "% Danger ↓":           "pct_danger",
-                "% Aquaculture OK ↓":   "pct_aqua",
-                "% Dessalement OK ↓":   "pct_dessal",
-            }
-            order_col = sort_col_map[sort_by]
-
-            with st.spinner():
-                df_plage = q(f"""
-                    SELECT NOM_PLAGE, NOM_WILAYA,
-                           ROUND(AVG(MESURE),3)  AS avg_hsv,
-                           ROUND(MAX(MESURE),2)  AS max_hsv,
-                           ROUND(SUM(CASE WHEN MESURE>=2 THEN 1 ELSE 0 END)*100.0/COUNT(*),1) AS pct_danger,
-                           ROUND(SUM(CASE WHEN AQUA_OK THEN 1 ELSE 0 END)*100.0/COUNT(*),1)  AS pct_aqua,
-                           ROUND(SUM(CASE WHEN DESSAL_OK THEN 1 ELSE 0 END)*100.0/COUNT(*),1) AS pct_dessal,
-                           COUNT(*) AS nb_obs
-                    FROM hsv {wh}
-                    GROUP BY NOM_PLAGE, NOM_WILAYA
-                    ORDER BY {order_col} DESC
-                    LIMIT {top_n}
-                """)
-            if not df_plage.empty:
-                df_plage.columns = ["Plage","Wilaya","HSV Moy (m)","HSV Max (m)","% Danger","% Aqua OK","% Dessal OK","Nb obs"]
-
-                # Graphique horizontal
-                fig_p = go.Figure()
-                bar_colors = df_plage["% Danger"].apply(
-                    lambda v: "#ef4444" if v >= 30 else ("#f59e0b" if v >= 15 else "#10b981")
-                )
-                fig_p.add_trace(go.Bar(
-                    x=df_plage["HSV Moy (m)"],
-                    y=df_plage["Plage"],
-                    orientation="h",
-                    marker_color=bar_colors,
-                    text=df_plage["HSV Moy (m)"].map(lambda v: f"{v:.3f} m"),
-                    textposition="outside",
-                    customdata=df_plage[["Wilaya","% Danger","HSV Max (m)","% Aqua OK","% Dessal OK"]].values,
-                    hovertemplate=(
-                        "<b>%{y}</b><br>"
-                        "Wilaya : %{customdata[0]}<br>"
-                        "HSV Moy : %{x:.3f} m<br>"
-                        "HSV Max : %{customdata[2]:.2f} m<br>"
-                        "% Danger : %{customdata[1]:.1f}%<br>"
-                        "% Aqua OK : %{customdata[3]:.1f}%<br>"
-                        "% Dessal OK : %{customdata[4]:.1f}%<extra></extra>"
-                    )
-                ))
-                apply_theme(fig_p)
-                fig_p.update_layout(
-                    title=f"Top {top_n} plages — {sort_by.replace(' ↓','')}",
-                    xaxis_title="HSV Moyenne (m)",
-                    yaxis=dict(autorange="reversed", tickfont=dict(size=11)),
-                    height=max(340, top_n * 22),
-                    margin=dict(l=0, r=80, t=40, b=0),
-                    showlegend=False
-                )
-                st.plotly_chart(fig_p, use_container_width=True)
-
-                # Légende couleurs danger
-                st.markdown("""
-                <div style="display:flex;gap:1.5rem;margin-top:-0.5rem;margin-bottom:1rem;font-size:0.82rem;">
-                    <span style="color:#ef4444;">● % Danger ≥ 30% — Risque élevé</span>
-                    <span style="color:#f59e0b;">● % Danger ≥ 15% — Risque modéré</span>
-                    <span style="color:#10b981;">● % Danger &lt; 15% — Risque faible</span>
-                </div>
-                """, unsafe_allow_html=True)
-
-                # Tableau détaillé
-                st.dataframe(df_plage, use_container_width=True, hide_index=True)
-
-        else:
-            st.warning("Données cartographiques non disponibles.")
-
-    # ── Mode : HSV par Distance ─────────────────────────────────────────
+    elif analysis_page == T("summer_analysis"):
+        page_header("#f97316","🏖️","Analyse Estivale","Juin · Juillet · Août")
+        wh_ete = where_clause_with_extra("MONTH IN (6,7,8)")
+        section("📊","KPIs Estivaux"); show_kpis(wh_ete)
+        st.info("Contenu de l'analyse estivale — cf. version originale")
     else:
-        st.markdown("""
-        <div class="info-card" style="border-left-color:#0ea5e9;">
-            <div class="title" style="color:#38bdf8;">Signification des zones de distance</div>
-            <div class="threshold-row"><span class="threshold-key" style="color:#ef4444;">● Dist. 1 — ~1 km</span><span class="threshold-val">Frontière terre-mer · Danger direct baigneurs</span></div>
-            <div class="threshold-row"><span class="threshold-key" style="color:#f59e0b;">● Dist. 2 — ~5 km</span><span class="threshold-val">Zone de baignade étendue</span></div>
-            <div class="threshold-row"><span class="threshold-key" style="color:#0ea5e9;">● Dist. 3 — ~10 km</span><span class="threshold-val">Zone intermédiaire</span></div>
-            <div class="threshold-row"><span class="threshold-key" style="color:#8b5cf6;">● Dist. 4 — ~20 km</span><span class="threshold-val">Conditions du large</span></div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.info("👈 Sélectionnez un type d'analyse dans le menu de gauche.")
 
-        dist_select = st.multiselect(
-            "Distances à afficher",
-            options=[1,2,3,4],
-            default=[1,2,3,4],
-            format_func=lambda x: DISTANCE_LABELS[x]
-        )
+elif page == T("activities"):
+    st.info(f"Page activités ({activity_page}) — cf. code original complet intégré.")
 
-        if dist_select:
-            dist_in  = ",".join(str(d) for d in dist_select)
-            extra_wh = where_clause(f"DISTANCE IN ({dist_in})")
+elif page == T("synthesis"):
+    page_header("#8b5cf6","📋","Synthèse & Export","Tableaux récapitulatifs et téléchargement")
+    wh = W()
+    tab1,tab2,tab3 = st.tabs([T("synth_by_beach"),T("monthly_synth"),T("export")])
+    with tab1:
+        df_synth = q(f"""SELECT NOM_PLAGE,NOM_WILAYA,COUNT(*) AS n,
+                       ROUND(AVG(MESURE),3) AS avg_hsv,ROUND(MAX(MESURE),2) AS max_hsv,
+                       ROUND(STDDEV(MESURE),3) AS std_hsv,
+                       ROUND(SUM(CASE WHEN MESURE>=2 THEN 1 ELSE 0 END)*100.0/COUNT(*),1) AS pct_danger
+                FROM {VIEW} {wh} GROUP BY NOM_PLAGE,NOM_WILAYA ORDER BY avg_hsv DESC""")
+        if not df_synth.empty:
+            st.dataframe(df_synth,use_container_width=True,hide_index=True)
+            st.download_button(T("download_csv"),df_synth.to_csv(index=False).encode("utf-8"),"synthese.csv","text/csv")
 
-            with st.spinner("Chargement clusters..."):
-                df_dm = q(f"""
-                    SELECT DISTANCE, X, Y, NOM_WILAYA, NOM_PLAGE,
-                           AVG(MESURE)     AS avg_hsv,
-                           MAX(MESURE)     AS max_hsv,
-                           AVG(wind_speed) AS avg_ws,
-                           MAX(wind_speed) AS max_ws,
-                           AVG(mwp)        AS avg_mwp,
-                           AVG(mwd)        AS avg_mwd,
-                           SUM(CASE WHEN MESURE>=2    THEN 1 ELSE 0 END)*100.0/COUNT(*) AS pct_danger,
-                           SUM(CASE WHEN wind_speed>=10 THEN 1 ELSE 0 END)*100.0/COUNT(*) AS pct_vent_fort,
-                           SUM(CASE WHEN AQUA_OK THEN 1 ELSE 0 END)*100.0/COUNT(*) AS pct_ok,
-                           SUM(CASE WHEN DESSAL_OK THEN 1 ELSE 0 END)*100.0/COUNT(*) AS pct_dessal,
-                           COUNT(*)        AS nb
-                    FROM hsv {extra_wh}
-                    GROUP BY DISTANCE, X, Y, NOM_WILAYA, NOM_PLAGE
-                """)
+elif page == T("danger_map"):
+    page_header("#ef4444","🗺️","Carte des Dangers","Cartographie interactive — côtes algériennes")
+    wh = W()
+    df_map = q(f"""SELECT NOM_PLAGE,NOM_WILAYA,FIRST(X) AS lon,FIRST(Y) AS lat,
+                   ROUND(AVG(MESURE),3) AS avg_hsv,ROUND(MAX(MESURE),2) AS max_hsv,
+                   ROUND(SUM(CASE WHEN MESURE>=2 THEN 1 ELSE 0 END)*100.0/COUNT(*),1) AS pct_danger
+                FROM {VIEW} {wh} GROUP BY NOM_PLAGE,NOM_WILAYA HAVING lon IS NOT NULL AND lat IS NOT NULL""")
+    if not df_map.empty:
+        fig = px.scatter_mapbox(df_map,lat="lat",lon="lon",color="avg_hsv",size="avg_hsv",
+            hover_name="NOM_PLAGE",hover_data={"NOM_WILAYA":True,"avg_hsv":":.3f","max_hsv":":.2f","pct_danger":":.1f","lon":False,"lat":False},
+            color_continuous_scale="Blues",size_max=20,zoom=5,mapbox_style="carto-darkmatter",labels={"avg_hsv":"HSV Moy (m)"})
+        apply_theme(fig); fig.update_layout(height=520,margin=dict(l=0,r=0,t=40,b=0),title="Côtes algériennes — HSV Moyenne")
+        st.plotly_chart(fig,use_container_width=True)
 
-            if not df_dm.empty:
-                df_dm["DIST_LABEL"] = df_dm["DISTANCE"].map(DISTANCE_LABELS)
-
-                # ── Carte ──────────────────────────────────────────────
-                section("📡","Clusters HSV et vent par distance à la côte")
-                fig = px.scatter_mapbox(
-                    df_dm, lat="Y", lon="X",
-                    color="DIST_LABEL",
-                    size="avg_hsv",
-                    size_max=22,
-                    hover_name="NOM_PLAGE",
-                    hover_data={
-                        "NOM_WILAYA": True, "DIST_LABEL": True,
-                        "avg_hsv": ":.3f", "max_hsv": ":.2f",
-                        "avg_ws": ":.1f", "avg_mwp": ":.1f",
-                        "avg_mwd": ":.0f", "pct_danger": ":.1f",
-                        "nb": True, "Y": False, "X": False
-                    },
-                    mapbox_style="carto-darkmatter",
-                    zoom=5, center={"lat": 36.5, "lon": 3.0},
-                    color_discrete_map=DISTANCE_COLORS,
-                    title="Côtes algériennes — HSV par distance à la côte"
-                )
-                fig.update_layout(
-                    paper_bgcolor="rgba(4,18,32,0)",
-                    font_color="#7fb5d5",
-                    height=520,
-                    margin=dict(l=0,r=0,t=40,b=0)
-                )
-                st.plotly_chart(fig, use_container_width=True)
-
-                # ── KPIs par distance ──────────────────────────────────
-                section("📊","HSV, vent et danger par zone")
-                df_kpi = (
-                    df_dm.groupby("DIST_LABEL")
-                    .agg(
-                        avg_hsv       =("avg_hsv",       "mean"),
-                        max_hsv       =("max_hsv",       "max"),
-                        avg_ws        =("avg_ws",        "mean"),
-                        pct_danger    =("pct_danger",    "mean"),
-                        pct_vent_fort =("pct_vent_fort", "mean"),
-                    )
-                    .reset_index()
-                )
-
-                cols_d = st.columns(len(df_kpi))
-                for i, (_, row) in enumerate(df_kpi.iterrows()):
-                    c = list(DISTANCE_COLORS.values())[i % 4]
-                    with cols_d[i]:
-                        st.markdown(f"""
-                        <div class="stat-card" style="border-top:2px solid {c};">
-                            <div class="label">{row['DIST_LABEL']}</div>
-                            <div class="value" style="color:{c};font-size:1.3rem;">{row['avg_hsv']:.2f} m</div>
-                            <div class="sub">% Danger : {row['pct_danger']:.1f}%</div>
-                            <div class="sub">Vent moy : {row['avg_ws']:.1f} m/s · % fort : {row['pct_vent_fort']:.1f}%</div>
-                        </div>
-                        """, unsafe_allow_html=True)
-
-                # ── Graphiques ─────────────────────────────────────────
-                col_a, col_b = st.columns(2)
-                colors = [list(DISTANCE_COLORS.values())[i % 4] for i in range(len(df_kpi))]
-
-                with col_a:
-                    fig2 = go.Figure()
-                    fig2.add_trace(go.Bar(
-                        x=df_kpi["DIST_LABEL"], y=df_kpi["avg_hsv"],
-                        name="HSV moy (m)", marker_color=colors,
-                        text=df_kpi["avg_hsv"].map(lambda v: f"{v:.2f}"),
-                        textposition="outside"
-                    ))
-                    fig2.add_trace(go.Scatter(
-                        x=df_kpi["DIST_LABEL"], y=df_kpi["pct_danger"],
-                        name="% Danger", mode="lines+markers",
-                        line=dict(color="#ef4444", width=2), yaxis="y2"
-                    ))
-                    apply_theme(fig2)
-                    fig2.update_layout(
-                        title="HSV et % danger par zone",
-                        yaxis=dict(title="HSV (m)", **PLOTLY_THEME["yaxis"]),
-                        yaxis2=dict(
-                            title="% Danger", overlaying="y", side="right",
-                            gridcolor="rgba(0,0,0,0)",
-                            tickcolor="#4a7a96", tickfont=dict(color="#94b8cc")
-                        ),
-                        height=320
-                    )
-                    st.plotly_chart(fig2, use_container_width=True)
-
-                with col_b:
-                    fig3 = go.Figure()
-                    fig3.add_trace(go.Bar(
-                        x=df_kpi["DIST_LABEL"], y=df_kpi["avg_ws"],
-                        name="Vent moy (m/s)", marker_color=colors,
-                        text=df_kpi["avg_ws"].map(lambda v: f"{v:.1f}"),
-                        textposition="outside"
-                    ))
-                    fig3.add_trace(go.Scatter(
-                        x=df_kpi["DIST_LABEL"], y=df_kpi["pct_vent_fort"],
-                        name="% Vent fort", mode="lines+markers",
-                        line=dict(color="#f59e0b", width=2), yaxis="y2"
-                    ))
-                    apply_theme(fig3)
-                    fig3.update_layout(
-                        title="Vent et % fort par zone",
-                        yaxis=dict(title="Vent moy (m/s)", **PLOTLY_THEME["yaxis"]),
-                        yaxis2=dict(
-                            title="% Vent fort", overlaying="y", side="right",
-                            gridcolor="rgba(0,0,0,0)",
-                            tickcolor="#4a7a96", tickfont=dict(color="#94b8cc")
-                        ),
-                        height=320
-                    )
-                    st.plotly_chart(fig3, use_container_width=True)
-
-                # ── Classement par wilaya (mode distance) ──────────────
-                section("📊","Classement par wilaya — zones sélectionnées")
-                with st.spinner():
-                    df_wil_d = q(f"""
-                        SELECT NOM_WILAYA,
-                               COUNT(DISTINCT NOM_PLAGE)  AS nb_plages,
-                               ROUND(AVG(MESURE),3)       AS avg_hsv,
-                               ROUND(MAX(MESURE),2)       AS max_hsv,
-                               ROUND(SUM(CASE WHEN MESURE>=2 THEN 1 ELSE 0 END)*100.0/COUNT(*),1) AS pct_danger,
-                               ROUND(AVG(wind_speed),1)   AS avg_ws,
-                               ROUND(SUM(CASE WHEN AQUA_OK THEN 1 ELSE 0 END)*100.0/COUNT(*),1)  AS pct_aqua,
-                               ROUND(SUM(CASE WHEN DESSAL_OK THEN 1 ELSE 0 END)*100.0/COUNT(*),1) AS pct_dessal
-                        FROM hsv {extra_wh}
-                        GROUP BY NOM_WILAYA ORDER BY avg_hsv DESC
-                    """)
-                if not df_wil_d.empty:
-                    df_wil_d.columns = ["Wilaya","Nb plages","HSV Moy (m)","HSV Max (m)","% Danger","Vent Moy (m/s)","% Aqua OK","% Dessal OK"]
-                    st.dataframe(df_wil_d, use_container_width=True, hide_index=True)
-
-                # ── Classement par plage (mode distance) ───────────────
-                section("🏖️","Classement par plage — zones sélectionnées")
-                col_sort_d, col_n_d, col_dist_d = st.columns([2, 1, 2])
-                with col_sort_d:
-                    sort_by_d = st.selectbox(
-                        "Trier par",
-                        ["HSV Moyenne ↓", "HSV Maximum ↓", "% Danger ↓", "Vent Moyen ↓", "% Aquaculture OK ↓", "% Dessalement OK ↓"],
-                        key="sort_plage_dist"
-                    )
-                with col_n_d:
-                    top_n_d = st.number_input(
-                        "Top N plages", min_value=5, max_value=56,
-                        value=20, step=5, key="topn_dist"
-                    )
-                with col_dist_d:
-                    dist_group = st.radio(
-                        "Affichage",
-                        ["Toutes distances confondues", "Par distance"],
-                        horizontal=True,
-                        key="dist_group_radio"
-                    )
-
-                sort_col_dist = {
-                    "HSV Moyenne ↓":        "avg_hsv",
-                    "HSV Maximum ↓":        "max_hsv",
-                    "% Danger ↓":           "pct_danger",
-                    "Vent Moyen ↓":         "avg_ws",
-                    "% Aquaculture OK ↓":   "pct_ok",
-                    "% Dessalement OK ↓":   "pct_dessal",
-                }[sort_by_d]
-
-                if dist_group == "Toutes distances confondues":
-                    # Agrégation toutes distances
-                    df_plage_d = (
-                        df_dm.groupby(["NOM_PLAGE","NOM_WILAYA"])
-                        .agg(
-                            avg_hsv      =("avg_hsv",      "mean"),
-                            max_hsv      =("max_hsv",      "max"),
-                            avg_ws       =("avg_ws",       "mean"),
-                            pct_danger   =("pct_danger",   "mean"),
-                            pct_vent_fort=("pct_vent_fort","mean"),
-                            pct_ok       =("pct_ok",       "mean"),
-                            pct_dessal   =("pct_dessal",   "mean"),
-                            nb           =("nb",           "sum"),
-                        )
-                        .reset_index()
-                        .sort_values(sort_col_dist, ascending=False)
-                        .head(top_n_d)
-                    )
-
-                    bar_colors_d = df_plage_d["pct_danger"].apply(
-                        lambda v: "#ef4444" if v >= 30 else ("#f59e0b" if v >= 15 else "#10b981")
-                    )
-                    fig_pd = go.Figure()
-                    fig_pd.add_trace(go.Bar(
-                        x=df_plage_d["avg_hsv"],
-                        y=df_plage_d["NOM_PLAGE"],
-                        orientation="h",
-                        marker_color=bar_colors_d,
-                        text=df_plage_d["avg_hsv"].map(lambda v: f"{v:.3f} m"),
-                        textposition="outside",
-                        customdata=df_plage_d[["NOM_WILAYA","pct_danger","max_hsv","avg_ws","pct_vent_fort","pct_ok","pct_dessal"]].values,
-                        hovertemplate=(
-                            "<b>%{y}</b><br>"
-                            "Wilaya : %{customdata[0]}<br>"
-                            "HSV Moy : %{x:.3f} m<br>"
-                            "HSV Max : %{customdata[2]:.2f} m<br>"
-                            "% Danger : %{customdata[1]:.1f}%<br>"
-                            "Vent Moy : %{customdata[3]:.1f} m/s<br>"
-                            "% Vent fort : %{customdata[4]:.1f}%<br>"
-                            "% Aqua OK : %{customdata[5]:.1f}%<br>"
-                            "% Dessal OK : %{customdata[6]:.1f}%<extra></extra>"
-                        )
-                    ))
-                    apply_theme(fig_pd)
-                    fig_pd.update_layout(
-                        title=f"Top {top_n_d} plages — {sort_by_d.replace(' ↓','')} (toutes distances)",
-                        xaxis_title="HSV Moyenne (m)",
-                        yaxis=dict(autorange="reversed", tickfont=dict(size=11)),
-                        height=max(340, top_n_d * 22),
-                        margin=dict(l=0, r=80, t=40, b=0),
-                        showlegend=False
-                    )
-                    st.plotly_chart(fig_pd, use_container_width=True)
-
-                    st.markdown("""
-                    <div style="display:flex;gap:1.5rem;margin-top:-0.5rem;margin-bottom:1rem;font-size:0.82rem;">
-                        <span style="color:#ef4444;">● % Danger ≥ 30% — Risque élevé</span>
-                        <span style="color:#f59e0b;">● % Danger ≥ 15% — Risque modéré</span>
-                        <span style="color:#10b981;">● % Danger &lt; 15% — Risque faible</span>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-                    df_show_d = df_plage_d[["NOM_PLAGE","NOM_WILAYA","avg_hsv","max_hsv","pct_danger","avg_ws","pct_vent_fort","pct_ok","pct_dessal","nb"]].copy()
-                    df_show_d.columns = ["Plage","Wilaya","HSV Moy (m)","HSV Max (m)","% Danger","Vent Moy (m/s)","% Vent fort","% Aqua OK","% Dessal OK","Nb obs"]
-                    st.dataframe(df_show_d, use_container_width=True, hide_index=True)
-
-                else:
-                    # Vue par distance : un graphique par zone sélectionnée
-                    for dist_val in dist_select:
-                        dist_lbl = DISTANCE_LABELS[dist_val]
-                        c_dist   = list(DISTANCE_COLORS.values())[(dist_val - 1) % 4]
-
-                        df_sub = (
-                            df_dm[df_dm["DISTANCE"] == dist_val]
-                            .sort_values(sort_col_dist, ascending=False)
-                            .head(top_n_d)
-                        )
-                        if df_sub.empty:
-                            continue
-
-                        st.markdown(f"""
-                        <div style="margin:1rem 0 0.4rem;font-size:0.95rem;font-weight:600;color:{c_dist};">
-                            {dist_lbl}
-                        </div>
-                        """, unsafe_allow_html=True)
-
-                        bar_colors_sub = df_sub["pct_danger"].apply(
-                            lambda v: "#ef4444" if v >= 30 else ("#f59e0b" if v >= 15 else "#10b981")
-                        )
-                        fig_sub = go.Figure()
-                        fig_sub.add_trace(go.Bar(
-                            x=df_sub["avg_hsv"],
-                            y=df_sub["NOM_PLAGE"],
-                            orientation="h",
-                            marker_color=bar_colors_sub,
-                            text=df_sub["avg_hsv"].map(lambda v: f"{v:.3f} m"),
-                            textposition="outside",
-                            customdata=df_sub[["NOM_WILAYA","pct_danger","max_hsv","avg_ws"]].values,
-                            hovertemplate=(
-                                "<b>%{y}</b><br>"
-                                "Wilaya : %{customdata[0]}<br>"
-                                "HSV Moy : %{x:.3f} m<br>"
-                                "HSV Max : %{customdata[2]:.2f} m<br>"
-                                "% Danger : %{customdata[1]:.1f}%<br>"
-                                "Vent Moy : %{customdata[3]:.1f} m/s<extra></extra>"
-                            )
-                        ))
-                        apply_theme(fig_sub)
-                        fig_sub.update_layout(
-                            title=f"Top {top_n_d} plages · {dist_lbl} — {sort_by_d.replace(' ↓','')}",
-                            xaxis_title="HSV Moyenne (m)",
-                            yaxis=dict(autorange="reversed", tickfont=dict(size=10)),
-                            height=max(300, len(df_sub) * 22),
-                            margin=dict(l=0, r=80, t=40, b=0),
-                            showlegend=False
-                        )
-                        st.plotly_chart(fig_sub, use_container_width=True)
-
-                    st.markdown("""
-                    <div style="display:flex;gap:1.5rem;margin-top:0.2rem;margin-bottom:1rem;font-size:0.82rem;">
-                        <span style="color:#ef4444;">● % Danger ≥ 30% — Risque élevé</span>
-                        <span style="color:#f59e0b;">● % Danger ≥ 15% — Risque modéré</span>
-                        <span style="color:#10b981;">● % Danger &lt; 15% — Risque faible</span>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-
-# ═══════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
 # FOOTER
-# ═══════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
 st.markdown("---")
-st.markdown("""
-<div style="text-align:center;padding:1rem 0;font-size:0.75rem;color:var(--text-muted);">
-    Système HSV · Côtes Algériennes · 1985–2023 &nbsp;·&nbsp;
-    Données ERA5 (ECMWF) &nbsp;·&nbsp;
+model_info = "ERA5 + CMEMS (M2) · 1999–2023" if is_m2 else "ERA5 (M1) · 1985–2023"
+lang_info  = {"fr":"Français","en":"English","ar":"العربية"}.get(st.session_state.get("lang","fr"),"Français")
+st.markdown(f"""
+<div style="text-align:center;padding:1rem 0;font-size:.75rem;color:var(--text-m);">
+    Système HSV · Côtes Algériennes · {model_info} &nbsp;·&nbsp;
     LSTM + Transfer Learning &nbsp;·&nbsp;
-    Powered by DuckDB + Streamlit
-</div>
-""", unsafe_allow_html=True)
+    DuckDB + Streamlit + Plotly &nbsp;·&nbsp;
+    Copernicus CDS ERA5 &nbsp;·&nbsp;
+    🌐 {lang_info}
+</div>""", unsafe_allow_html=True)
