@@ -1,7 +1,6 @@
 streamlit
-pandas
 numpy
-plotly
+pandas
 scikit-learn
+plotly
 joblib
-tensorflow-cpu
