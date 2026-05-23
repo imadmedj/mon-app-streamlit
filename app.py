@@ -400,20 +400,16 @@ def _collect_parquets(path):
 def _build_view(con, view_name, path):
     files = _collect_parquets(path)
     if not files:
-        st.sidebar.error(f"❌ _build_view '{view_name}' : aucun parquet dans {path}")
         return False
 
-    st.sidebar.success(f"✅ {len(files)} parquets trouvés pour {view_name}")
     files_sql = ", ".join(f"'{f}'" for f in files)
 
     try:
         probe = con.execute(f"SELECT * FROM read_parquet([{files_sql}]) LIMIT 1").df()
-    except Exception as e:
-        st.sidebar.error(f"❌ Lecture parquet échouée : {e}")
+    except Exception:
         return False
 
     cols = probe.columns.tolist()
-    st.sidebar.caption(f"Colonnes : {cols}")
 
     def _col(c, typ="DOUBLE"):
         return f"CAST({c} AS {typ})" if c in cols else f"NULL::{typ}"
@@ -490,10 +486,8 @@ def _build_view(con, view_name, path):
                      THEN TRUE ELSE FALSE END AS DESSAL_OK
             FROM read_parquet([{files_sql}])
         """)
-        st.sidebar.success(f"✅ Vue '{view_name}' créée")
         return True
-    except Exception as e:
-        st.sidebar.error(f"❌ CREATE VIEW '{view_name}' échoué : {e}")
+    except Exception:
         return False
 @st.cache_resource
 def get_con():
