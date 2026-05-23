@@ -76,8 +76,8 @@ if not os.path.exists(scaler_path):
 
 # Dataset M1
 BASE_DIR_DATA = "data"
-ZIP_PATH      = os.path.join(BASE_DIR_DATA, "dataset.zip")
-EXTRACT_PATH  = os.path.join(BASE_DIR_DATA, "dataset")
+ZIP_PATH      = os.path.join(BASE_DIR_DATA, "hsv_dataset_model1.zip")
+EXTRACT_PATH  = os.path.join(BASE_DIR_DATA, "lstm_final_clean")
 os.makedirs(BASE_DIR_DATA, exist_ok=True)
 
 if not os.path.exists(ZIP_PATH):
@@ -85,7 +85,7 @@ if not os.path.exists(ZIP_PATH):
 
 if not os.path.exists(EXTRACT_PATH):
     with zipfile.ZipFile(ZIP_PATH, "r") as zip_ref:
-        zip_ref.extractall(EXTRACT_PATH)
+        zip_ref.extractall("data/")
 
 # Plots locaux fine-tunés
 BASE_DIR_PLOTS     = "plots"
