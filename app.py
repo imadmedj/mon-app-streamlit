@@ -51,14 +51,7 @@ import json
 import warnings
 from datetime import datetime, timedelta
 warnings.filterwarnings("ignore")
-import os
-import streamlit as st
 
-st.write("📁 data folder =")
-st.write(os.listdir("data"))
-
-for root, dirs, files in os.walk("data"):
-    st.write("➡️", root)
 # ═══════════════════════════════════════════════════════════════════════════════
 # TRADUCTIONS
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -331,7 +324,7 @@ hr{border:none;border-top:1px solid var(--border-s)!important;margin:1.5rem 0!im
 # ═══════════════════════════════════════════════════════════════════════════════
 # CONSTANTES
 # ═══════════════════════════════════════════════════════════════════════════════
-PATH_M1 = "data/lstm_final_clean"
+PATH_M1 = "data/dataset_model1"
 PATH_M2 = "data/dataset_model2_1999_2023_clean"
 LSTM_PATH   = "models/global_lstm.keras"
 GRU_PATH    = "models/global_gru.keras"
