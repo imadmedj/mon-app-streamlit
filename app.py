@@ -92,18 +92,7 @@ if not os.path.exists(EXTRACT_PATH):
         os.rename(extracted_folder, EXTRACT_PATH)
 
 
-# DEBUG TEMPORAIRE
-import glob
-parquets = glob.glob("data/**/*.parquet", recursive=True)
-st.write("=== Fichiers parquet trouvés ===")
-st.write(parquets)
-st.write("=== EXTRACT_PATH existe ? ===")
-st.write(os.path.exists(EXTRACT_PATH))
-st.write("=== Contenu de data/ ===")
-if os.path.exists("data"):
-    for root, dirs, files in os.walk("data"):
-        for f in files:
-            st.write(os.path.join(root, f))
+
 
 # Plots locaux fine-tunés
 BASE_DIR_PLOTS     = "plots"
@@ -441,8 +430,8 @@ def page_header(icon_bg, icon, title, subtitle):
 # ═══════════════════════════════════════════════════════════════════════════════
 # DUCKDB
 # ═══════════════════════════════════════════════════════════════════════════════
-data_m1_ok = os.path.exists(PATH_M1)
-data_m2_ok = os.path.exists(PATH_M2)
+data_m1_ok = os.path.exists(PATH_M1) and len(glob.glob(os.path.join(PATH_M1, "*.parquet"))) > 0
+data_m2_ok = os.path.exists(PATH_M2) and len(glob.glob(os.path.join(PATH_M2, "*.parquet"))) > 0
 
 def _collect_parquets(path):
     files = []
