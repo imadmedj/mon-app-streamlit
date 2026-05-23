@@ -26,14 +26,20 @@ def _gdrive_url(file_id: str) -> str:
 
 
 def _download_file(file_id: str, dest: str, label: str):
-    """Télécharge un fichier depuis Google Drive avec gdown (gère les gros fichiers)."""
+    """Télécharge un fichier depuis Google Drive avec gdown."""
     import gdown
-    os.makedirs(os.path.dirname(dest) if os.path.dirname(dest) else ".", exist_ok=True)
+
+    os.makedirs(
+        os.path.dirname(dest) if os.path.dirname(dest) else ".",
+        exist_ok=True
+    )
+
+    url = f"https://drive.google.com/uc?id={file_id}"
+
     gdown.download(
-        url=f"https://drive.google.com/uc?id={file_id}",
+        url=url,
         output=dest,
-        quiet=False,
-        fuzzy=True,
+        quiet=False
     )
 
 
