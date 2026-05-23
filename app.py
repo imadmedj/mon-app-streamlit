@@ -398,8 +398,9 @@ def _build_view(con, view_name, path):
     files = _collect_parquets(path)
     if not files: return False
     files_sql = ", ".join(f"'{f}'" for f in files)
+    # APRÈS (corrigé) :
     probe = con.execute(f"SELECT * FROM read_parquet([{files_sql}]) LIMIT 1").df()
-    st.write("📊 colonnes dataset :", cols)
+    cols = probe.columns.tolist()
 
     def _col(c, typ="DOUBLE"):
         return f"CAST({c} AS {typ})" if c in cols else f"NULL::{typ}"
@@ -473,12 +474,25 @@ def _build_view(con, view_name, path):
         FROM read_parquet([{files_sql}])
     """)
     return True
-
 @st.cache_resource
 def get_con():
     con = duckdb.connect(database=":memory:", read_only=False)
-    if data_m1_ok: _build_view(con, "hsv",  PATH_M1)
-    if data_m2_ok: _build_view(con, "hsv2", PATH_M2)
+    
+    if data_m1_ok:
+        ok = _build_view(con, "hsv", PATH_M1)
+        if not ok:
+            st.warning(f"⚠️ Vue M1 non créée — aucun .parquet trouvé dans : {PATH_M1}")
+        else:
+            count = con.execute("SELECT COUNT(*) FROM hsv").fetchone()[0]
+            st.sidebar.success(f"✅ M1 chargé : {count:,} lignes")
+    else:
+        st.warning(f"⚠️ Chemin M1 introuvable : {PATH_M1}")
+        
+    if data_m2_ok:
+        ok = _build_view(con, "hsv2", PATH_M2)
+        if not ok:
+            st.warning(f"⚠️ Vue M2 non créée — aucun .parquet trouvé dans : {PATH_M2}")
+    
     return con
 
 con = get_con()
