@@ -12,3 +12,4 @@ cdsapi
 scipy
 gdown
 zipfile
+tensorflow
