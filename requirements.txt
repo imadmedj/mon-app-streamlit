@@ -12,3 +12,5 @@ h5py
 cdsapi
 scipy
 gdown
+streamlit
+tensorflow-cpu==2.15.0
