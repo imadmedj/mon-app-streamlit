@@ -51,6 +51,10 @@ import json
 import warnings
 from datetime import datetime, timedelta
 warnings.filterwarnings("ignore")
+import os
+
+st.write("FILES M1:")
+st.write(os.listdir(PATH_M1) if os.path.exists(PATH_M1) else "NOT FOUND")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TRADUCTIONS
@@ -380,6 +384,10 @@ def page_header(icon_bg, icon, title, subtitle):
 # ═══════════════════════════════════════════════════════════════════════════════
 data_m1_ok = os.path.exists(PATH_M1)
 data_m2_ok = os.path.exists(PATH_M2)
+st.write("PATH_M1 =", PATH_M1)
+st.write("PATH_M2 =", PATH_M2)
+st.write("M1 ok ?", data_m1_ok)
+st.write("M2 ok ?", data_m2_ok)
 
 def _collect_parquets(path):
     files = []
