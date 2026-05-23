@@ -8,8 +8,8 @@ joblib
 xarray
 netCDF4
 h5netcdf
+h5py
 cdsapi
 scipy
 gdown
-zipfile
-
+tensorflow
