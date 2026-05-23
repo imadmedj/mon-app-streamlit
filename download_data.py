@@ -76,17 +76,7 @@ def download_all():
         except Exception as e:
             errors.append(f"data: {e}")
 
-    # ── DEBUG : affiche les parquets trouvés (sidebar) ─────────────────
-    parquets = glob.glob("data/**/*.parquet", recursive=True)
-    st.sidebar.info(f"📁 {len(parquets)} parquets trouvés")
-    if parquets:
-        for p in parquets[:5]:
-            st.sidebar.caption(p)
-    else:
-        all_files = glob.glob("data/**/*", recursive=True)
-        st.sidebar.warning("⚠️ Aucun parquet ! Contenu de data/ :")
-        for f in all_files[:10]:
-            st.sidebar.caption(f)
+    
 
     # ──────────────────────────────────────────────────────────────────
     if errors:
