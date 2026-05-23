@@ -2,12 +2,6 @@ streamlit
 pandas
 numpy
 plotly
-duckdb
-tensorflow-cpu
 scikit-learn
 joblib
-xarray
-netCDF4
-h5netcdf
-cdsapi
-scipy
+tensorflow-cpu
