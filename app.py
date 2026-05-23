@@ -22,6 +22,81 @@ import json
 import warnings
 from datetime import datetime, timedelta
 warnings.filterwarnings("ignore")
+import gdown
+import os
+
+BASE_DIR = "models"
+os.makedirs(BASE_DIR, exist_ok=True)
+
+gru_path = os.path.join(BASE_DIR, "global_gru.keras")
+
+if not os.path.exists(gru_path):
+    url = "https://drive.google.com/uc?id=16As511yfxgvRZyr2aIp8WWynlCO3l6u3"
+    gdown.download(url, gru_path, quiet=False)
+
+model_gru = tf.keras.models.load_model(gru_path)
+
+BASE_DIR = "models"
+os.makedirs(BASE_DIR, exist_ok=True)
+
+lstm_path = os.path.join(BASE_DIR, "global_lstm.keras")
+
+if not os.path.exists(lstm_path):
+    url = "https://drive.google.com/uc?id=1NzDUOtwSHyduaeKx0ICFFSmttQlMxKh4"
+    gdown.download(url, lstm_path, quiet=False)
+
+model_lstm = tf.keras.models.load_model(lstm_path)
+BASE_DIR = "models"
+os.makedirs(BASE_DIR, exist_ok=True)
+
+scaler_path = os.path.join(BASE_DIR, "scaler.pkl")
+
+if not os.path.exists(scaler_path):
+    url = "https://drive.google.com/uc?id=1khCCzNWchuQXjR6qaKENqXiqI2Ftrpqx"
+    gdown.download(url, scaler_path, quiet=False)
+
+# charger le scaler
+scaler = joblib.load(scaler_path)
+import zipfile
+
+BASE_DIR = "data"
+ZIP_PATH = os.path.join(BASE_DIR, "dataset.zip")
+EXTRACT_PATH = os.path.join(BASE_DIR, "dataset")
+
+os.makedirs(BASE_DIR, exist_ok=True)
+
+# download
+if not os.path.exists(ZIP_PATH):
+    gdown.download(
+        "https://drive.google.com/uc?id=1dd-dtROZB6kEoZmoz0XWqHSo5GR_kLjn",
+        ZIP_PATH,
+        quiet=False
+    )
+
+# extract
+if not os.path.exists(EXTRACT_PATH):
+    with zipfile.ZipFile(ZIP_PATH, "r") as zip_ref:
+        zip_ref.extractall(EXTRACT_PATH)
+
+print("Dataset OK ✔")
+BASE_DIR = "plots"
+os.makedirs(BASE_DIR, exist_ok=True)
+
+zip_path = os.path.join(BASE_DIR, "plots_local_models.zip")
+extract_path = os.path.join(BASE_DIR, "plots_local_models")
+
+# 1) Télécharger le ZIP depuis Google Drive
+if not os.path.exists(zip_path):
+    url = "https://drive.google.com/uc?id=1O4qfVUw7S1rRQ6icIjUddC3dno161qaH"
+    gdown.download(url, zip_path, quiet=False)
+
+# 2) Extraire automatiquement
+if not os.path.exists(extract_path):
+    with zipfile.ZipFile(zip_path, "r") as zip_ref:
+        zip_ref.extractall(extract_path)
+
+print("✔ plots_local_models prêt :", extract_path)
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TRADUCTIONS
