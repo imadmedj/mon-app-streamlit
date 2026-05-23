@@ -397,7 +397,7 @@ def _collect_parquets(path):
 def _build_view(con, view_name, path):
     files = _collect_parquets(path)
     probe = con.execute(f"SELECT * FROM read_parquet([{files_sql}]) LIMIT 1").df()
-st.write("📊 Colonnes du dataset :", probe.columns.tolist())
+    st.write("📊 Colonnes du dataset :", probe.columns.tolist())
     if not files: return False
     files_sql = ", ".join(f"'{f}'" for f in files)
     probe = con.execute(f"SELECT * FROM read_parquet([{files_sql}]) LIMIT 1").df()
