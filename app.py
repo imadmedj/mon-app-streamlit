@@ -382,14 +382,7 @@ def page_header(icon_bg, icon, title, subtitle):
 data_m1_ok = os.path.exists(PATH_M1)
 data_m2_ok = os.path.exists(PATH_M2)
 # ── DEBUG IMMÉDIAT ────────────────────────────────────────────────────
-import glob as _glob
-_parquets = _glob.glob("data/**/*.parquet", recursive=True)
-st.sidebar.markdown("### 🔍 Debug chemins")
-st.sidebar.write(f"PATH_M1 existe : {data_m1_ok} → `{PATH_M1}`")
-st.sidebar.write(f"PATH_M2 existe : {data_m2_ok} → `{PATH_M2}`")
-st.sidebar.write(f"Parquets trouvés : {len(_parquets)}")
-for _p in _parquets[:8]:
-    st.sidebar.caption(_p)
+
 # ─────────────────────────────────────────────────────────────────────
 
 def _collect_parquets(path):
