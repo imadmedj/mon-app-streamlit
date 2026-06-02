@@ -23,6 +23,8 @@ import os
 import json
 import tempfile
 import warnings
+from download_data import download_if_needed
+download_if_needed()
 from datetime import datetime, timedelta
 warnings.filterwarnings("ignore")
 
