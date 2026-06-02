@@ -4,8 +4,4 @@ numpy
 plotly
 duckdb
 joblib
-tensorflow-cpu==2.15.0
-cdsapi
-copernicusmarine
-xarray
 gdown
