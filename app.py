@@ -12,7 +12,19 @@
 ║  HORIZONS : +1h · +6h · +12h  (3 sorties LSTM)                              ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """
+from download_data import download_if_needed
+download_if_needed()
 
+import subprocess
+import sys
+try:
+    import tensorflow as tf
+except ImportError:
+    subprocess.check_call([
+        sys.executable, "-m", "pip", "install",
+        "tensorflow==2.15.0"
+    ])
+    import tensorflow as tf
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -23,8 +35,6 @@ import os
 import json
 import tempfile
 import warnings
-from download_data import download_if_needed
-download_if_needed()
 from datetime import datetime, timedelta
 warnings.filterwarnings("ignore")
 
