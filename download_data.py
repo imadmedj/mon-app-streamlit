@@ -1,86 +1,126 @@
-"""
-Téléchargement automatique des fichiers depuis Google Drive.
-Appelé une seule fois au démarrage de l'app.
-"""
+import gdown
 import os
-import glob
 import zipfile
-import streamlit as st
-# telcharger
-# ── IDs Google Drive ──────────────────────────────────────────────────────────
-GDRIVE_FILES = {
-    "models/global_lstm.keras":  "1NzDUOtwSHyduaeKx0ICFFSmttQlMxKh4",
-    "models/global_gru.keras":   "16As511yfxgvRZyr2aIp8WWynlCO3l6u3",
-    "models/scaler.pkl":         "1khCCzNWchuQXjR6qaKENqXiqI2Ftrpqx",
-}
-PLOTS_ZIP_ID   = "1O4qfVUw7S1rRQ6icIjUddC3dno161qaH"
-DATA_ZIP_ID    = "1dd-dtROZB6kEoZmoz0XWqHSo5GR_kLjn"
-PLOTS_ZIP_PATH = "models/plots_local_models.zip"
-DATA_ZIP_PATH  = "data/hsv_dataset.zip"
-PLOTS_DIR      = "models/plots"
-DATA_SENTINEL  = "data/.downloaded"
 
+def download_if_needed():
 
-def _download_file(file_id: str, dest: str, label: str):
-    import gdown
-    os.makedirs(
-        os.path.dirname(dest) if os.path.dirname(dest) else ".",
-        exist_ok=True
-    )
-    url = f"https://drive.google.com/uc?id={file_id}"
-    gdown.download(url=url, output=dest, quiet=False)
+    # ══════════════════════════════
+    # DATA
+    # ══════════════════════════════
+    if not os.path.exists("data/lstm_final_clean"):
+        os.makedirs("data", exist_ok=True)
+        print("⬇️ Téléchargement lstm_final_clean.zip...")
+        gdown.download(
+            id="1bhldEXv0WgPrr2Phw3a9dH93564Ogu6s",
+            output="data/lstm_final_clean.zip",
+            quiet=False
+        )
+        print("📦 Extraction lstm_final_clean...")
+        with zipfile.ZipFile("data/lstm_final_clean.zip", "r") as z:
+            z.extractall("data/")
+        os.remove("data/lstm_final_clean.zip")
 
+    if not os.path.exists("data/dataset_model2_1999_2023_clean"):
+        os.makedirs("data", exist_ok=True)
+        print("⬇️ Téléchargement dataset_model2.zip...")
+        gdown.download(
+            id="1TEqa7Jk6a5TS_cyZHTon9QPQrv4c0EvZ",
+            output="data/dataset_model2.zip",
+            quiet=False
+        )
+        print("📦 Extraction dataset_model2...")
+        with zipfile.ZipFile("data/dataset_model2.zip", "r") as z:
+            z.extractall("data/")
+        os.remove("data/dataset_model2.zip")
 
-def _unzip(zip_path: str, extract_to: str):
-    os.makedirs(extract_to, exist_ok=True)
-    with zipfile.ZipFile(zip_path, "r") as z:
-        z.extractall(extract_to)
-    os.remove(zip_path)
+    # ══════════════════════════════
+    # MODELS
+    # ══════════════════════════════
+    if not os.path.exists("models/global_lstm.keras"):
+        os.makedirs("models", exist_ok=True)
+        print("⬇️ Téléchargement global_lstm.keras...")
+        gdown.download(
+            id="1NzDUOtwSHyduaeKx0ICFFSmttQlMxKh4",
+            output="models/global_lstm.keras",
+            quiet=False
+        )
 
+    if not os.path.exists("models/scaler.pkl"):
+        os.makedirs("models", exist_ok=True)
+        print("⬇️ Téléchargement scaler.pkl...")
+        gdown.download(
+            id="1khCCzNWchuQXjR6qaKENqXiqI2Ftrpqx",
+            output="models/scaler.pkl",
+            quiet=False
+        )
 
-@st.cache_resource(show_spinner=False)
-def download_all():
-    errors = []
+    if not os.path.exists("models/plots"):
+        os.makedirs("models", exist_ok=True)
+        print("⬇️ Téléchargement plots_local_models.zip...")
+        gdown.download(
+            id="1O4qfVUw7S1rRQ6icIjUddC3dno161qaH",
+            output="models/plots_local_models.zip",
+            quiet=False
+        )
+        print("📦 Extraction plots_local_models...")
+        with zipfile.ZipFile("models/plots_local_models.zip", "r") as z:
+            z.extractall("models/")
+        os.remove("models/plots_local_models.zip")
 
-    # ── 1. Modèles individuels ─────────────────────────────────────────
-    for dest, file_id in GDRIVE_FILES.items():
-        if not os.path.exists(dest):
-            try:
-                st.info(f"⬇️ Téléchargement {os.path.basename(dest)}…")
-                _download_file(file_id, dest, os.path.basename(dest))
-                st.success(f"✅ {os.path.basename(dest)} téléchargé")
-            except Exception as e:
-                errors.append(f"{dest}: {e}")
+    # ══════════════════════════════
+    # MODELS M2
+    # ══════════════════════════════
+    if not os.path.exists("models_m2/global_lstm_aqua.keras"):
+        os.makedirs("models_m2", exist_ok=True)
+        print("⬇️ Téléchargement global_lstm_aqua.keras...")
+        gdown.download(
+            id="1_3Zs9y0cM2shbDUWqQqd-ruU1lTp47An",
+            output="models_m2/global_lstm_aqua.keras",
+            quiet=False
+        )
 
-    # ── 2. Modèles locaux fine-tunés (ZIP → models/plots/) ────────────
-    plots_ready = os.path.isdir(PLOTS_DIR) and len(os.listdir(PLOTS_DIR)) > 0
-    if not plots_ready:
+    if not os.path.exists("models_m2/global_lstm_dessal.keras"):
+        os.makedirs("models_m2", exist_ok=True)
+        print("⬇️ Téléchargement global_lstm_dessal.keras...")
+        gdown.download(
+            id="1y46nJ_AWy8uyF5O-xV2rhqQvnuVJyxhS",
+            output="models_m2/global_lstm_dessal.keras",
+            quiet=False
+        )
+
+    if not os.path.exists("models_m2/scaler_aqua.pkl"):
+        os.makedirs("models_m2", exist_ok=True)
+        print("⬇️ Téléchargement scaler_aqua.pkl...")
+        gdown.download(
+            id="1qGjXWAP57XATsOddE_EGL5pUQIKcp7K-",
+            output="models_m2/scaler_aqua.pkl",
+            quiet=False
+        )
+
+    if not os.path.exists("models_m2/scaler_dessal.pkl"):
+        os.makedirs("models_m2", exist_ok=True)
+        print("⬇️ Téléchargement scaler_dessal.pkl...")
+        gdown.download(
+            id="1WvA9trcaiNFhrTscboXzu7jsZROBO5No",
+            output="models_m2/scaler_dessal.pkl",
+            quiet=False
+        )
+
+    if not os.path.exists("models_m2/plots"):
+        os.makedirs("models_m2", exist_ok=True)
+        print("⬇️ Téléchargement plots.rar...")
+        gdown.download(
+            id="1bIE6k-XlZl24zGYJfs2FMaOOk1TaJ9es",
+            output="models_m2/plots.rar",
+            quiet=False
+        )
+        print("📦 Extraction plots.rar...")
         try:
-            st.info("⬇️ Téléchargement modèles fine-tunés (plots)…")
-            _download_file(PLOTS_ZIP_ID, PLOTS_ZIP_PATH, "plots_local_models.zip")
-            st.info("📦 Décompression modèles fine-tunés…")
-            _unzip(PLOTS_ZIP_PATH, PLOTS_DIR)
-            st.success("✅ Modèles fine-tunés prêts")
+            import rarfile
+            with rarfile.RarFile("models_m2/plots.rar") as r:
+                r.extractall("models_m2/")
+            os.remove("models_m2/plots.rar")
         except Exception as e:
-            errors.append(f"plots: {e}")
+            print(f"⚠️ RAR non extrait : {e}")
 
-    # ── 3. Dataset (ZIP → data/) ──────────────────────────────────────
-    if not os.path.exists(DATA_SENTINEL):
-        try:
-            st.info("⬇️ Téléchargement dataset HSV (peut prendre quelques minutes)…")
-            _download_file(DATA_ZIP_ID, DATA_ZIP_PATH, "hsv_dataset.zip")
-            st.info("📦 Décompression dataset…")
-            _unzip(DATA_ZIP_PATH, "data/")
-            open(DATA_SENTINEL, "w").close()
-            st.success("✅ Dataset téléchargé et extrait")
-        except Exception as e:
-            errors.append(f"data: {e}")
-
-    
-
-    # ──────────────────────────────────────────────────────────────────
-    if errors:
-        for err in errors:
-            st.error(f"❌ Erreur : {err}")
-        return False
-    return True
+    print("✅ Tous les fichiers sont prêts !")
